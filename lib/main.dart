@@ -1,9 +1,8 @@
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
+
 import 'firebase_options.dart';
-import 'screens/auth/login_screen.dart';
-import 'screens/auth/role_dashboard_screen.dart';
+import 'screens/admin/admin_dashboard.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -19,38 +18,14 @@ class CampusBusApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      debugShowCheckedModeBanner: false,
       title: 'CampusBusAI 360',
+      debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,
-        scaffoldBackgroundColor: const Color(0xFFF6F8FC),
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFFFF7900)),
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFFF28C28)),
+        scaffoldBackgroundColor: const Color(0xFFFFF9F3),
       ),
-      home: const AuthGate(),
-    );
-  }
-}
-
-class AuthGate extends StatelessWidget {
-  const AuthGate({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return StreamBuilder<User?>(
-      stream: FirebaseAuth.instance.authStateChanges(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Scaffold(
-            body: Center(child: CircularProgressIndicator()),
-          );
-        }
-
-        if (snapshot.hasData) {
-          return const RoleDashboardScreen();
-        }
-
-        return const LoginScreen();
-      },
+      home: const AdminDashboard(),
     );
   }
 }
