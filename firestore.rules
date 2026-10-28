@@ -1,0 +1,76 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwnUser(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function validSelfRegistration(uid) {
+      return request.resource.data.keys().hasAll([
+          'uid', 'name', 'email', 'role', 'createdAt', 'isActive'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'uid', 'name', 'email', 'role', 'createdAt', 'isActive'
+        ])
+        && request.resource.data.uid == uid
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.role in ['student', 'parent']
+        && request.resource.data.isActive == true;
+    }
+
+    match /users/{uid} {
+      allow read: if isOwnUser(uid);
+
+      // Public sign-up can create only student/parent profiles for itself.
+      allow create: if isOwnUser(uid) && validSelfRegistration(uid);
+
+      // Users cannot change their own role, uid, or email through the client.
+      allow update: if isOwnUser(uid)
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.email == resource.data.email
+        && request.resource.data.role == resource.data.role
+        && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['name'])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0;
+
+      allow delete: if false;
+    }
+
+    function validDriverRequest(uid) {
+      return request.resource.data.keys().hasAll([
+          'uid', 'name', 'email', 'mobile', 'employeeId',
+          'busNumber', 'status', 'createdAt'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'uid', 'name', 'email', 'mobile', 'employeeId',
+          'busNumber', 'status', 'createdAt'
+        ])
+        && request.resource.data.uid == uid
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.mobile is string
+        && request.resource.data.employeeId is string
+        && request.resource.data.busNumber is string
+        && request.resource.data.status == 'pending';
+    }
+
+    match /driver_requests/{uid} {
+      // A driver may submit and read only their own pending request.
+      allow create: if isOwnUser(uid) && validDriverRequest(uid);
+      allow read: if isOwnUser(uid);
+      // Client apps cannot approve, modify, or delete driver requests.
+      allow update, delete: if false;
+    }
+
+    // Add narrowly scoped rules for buses, trips, attendance, etc. as those
+    // features are implemented. Do not make the database public.
+  }
+}
