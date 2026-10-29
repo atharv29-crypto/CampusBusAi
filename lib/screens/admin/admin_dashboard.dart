@@ -1907,163 +1907,207 @@ class _AdminDashboardState extends State<AdminDashboard> {
   );
 
   Widget _usersPage() {
+    if (_selected == 'Admin Accounts') {
+      return _liveAdminAccounts();
+    }
+
     final Map<String, (String, String, IconData, Color)> summaries = {
       'Students': ('Total Students', '416', Icons.school, _blue),
       'Parents': ('Total Parents', '390', Icons.family_restroom, _orange),
       'Drivers': ('Total Drivers', '18', Icons.badge, const Color(0xFF15966A)),
-      'Admin Accounts': (
-        'Admin Accounts',
-        '3',
-        Icons.admin_panel_settings,
-        const Color(0xFF7656C9),
-      ),
     };
+
     final item = summaries[_selected] ?? summaries['Students']!;
-    final List<(String, String, String, String, Color)> records =
-        switch (_selected) {
-          'Students' => [
-            (
-              'Atharv Chorge',
-              'atharv@example.edu • Student ID: STU-001',
-              'Account created',
-              'Active',
-              Colors.green,
-            ),
-            (
-              'Sneha Jadhav',
-              'sneha@example.edu • Student ID: STU-002',
-              'Account created',
-              'Active',
-              Colors.green,
-            ),
-          ],
-          'Parents' => [
-            (
-              'Manoj Chorge',
-              'manoj@example.edu • Linked student: Atharv Chorge',
-              'Parent account',
-              'Active',
-              Colors.green,
-            ),
-            (
-              'Sunita Jadhav',
-              'sunita@example.edu • Linked student: Sneha Jadhav',
-              'Parent account',
-              'Active',
-              Colors.green,
-            ),
-          ],
-          'Drivers' => [
-            (
-              'Ramesh Patil',
-              'ramesh@example.edu • Bus: BUS-A01',
-              'Driver account',
-              'Approved',
-              Colors.green,
-            ),
-            (
-              'S. Jadhav',
-              'sjadhav@example.edu • Bus: BUS-A02',
-              'Driver account',
-              'Approved',
-              Colors.green,
-            ),
-          ],
-          'Admin Accounts' => [
-            (
-              'Transport Admin',
-              'admin@example.edu • Role: Administrator',
-              'Admin account',
-              'Active',
-              Colors.green,
-            ),
-          ],
-          _ => [],
-        };
 
     return Column(
       children: [
-        LayoutBuilder(
-          builder: (context, c) {
-            final cols = c.maxWidth > 750 ? 3 : 1;
-            final w = (c.maxWidth - (cols - 1) * 12) / cols;
-            final cards = <(String, String, String, IconData, Color)>[
-              (item.$1, item.$2, 'Illustrative count', item.$3, item.$4),
-            ];
-            if (_selected == 'Students') {
-              cards.add((
-                'Present Today',
-                '380',
-                'Demo attendance',
-                Icons.check_circle_rounded,
-                const Color(0xFF15966A),
-              ));
-              cards.add((
-                'Absent Today',
-                '36',
-                'Demo attendance',
-                Icons.cancel_rounded,
-                const Color(0xFFD64545),
-              ));
-            } else if (_selected == 'Drivers') {
-              cards.add((
-                'Present Today',
-                '16',
-                'Demo attendance',
-                Icons.check_circle_rounded,
-                const Color(0xFF15966A),
-              ));
-              cards.add((
-                'Absent Today',
-                '2',
-                'Demo attendance',
-                Icons.cancel_rounded,
-                const Color(0xFFD64545),
-              ));
-            }
-            return Wrap(
-              spacing: 12,
-              runSpacing: 12,
-              children: [
-                for (final card in cards)
-                  SizedBox(
-                    width: w,
-                    child: _statCard(
-                      card.$1,
-                      card.$2,
-                      card.$3,
-                      card.$4,
-                      card.$5,
-                    ),
-                  ),
-              ],
-            );
-          },
-        ),
+        _statCard(item.$1, item.$2, 'Demo value', item.$3, item.$4),
         const SizedBox(height: 16),
         _panel(
           _selected,
-          Column(
-            children: [
-              for (var i = 0; i < records.length; i++) ...[
-                if (i > 0) const Divider(color: _line),
-                _simpleRecord(
-                  records[i].$1,
-                  records[i].$2,
-                  records[i].$3,
-                  records[i].$4,
-                  records[i].$5,
+          const Padding(
+            padding: EdgeInsets.all(16),
+            child: Text(
+              'This section still uses demo data. '
+              'Live integration will be added separately.',
+              style: TextStyle(color: _muted),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _liveAdminAccounts() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Expanded(
+              child: Text(
+                'Authorized administrators',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: _dark,
                 ),
-              ],
+              ),
+            ),
+            FilledButton.icon(
+              onPressed: _working ? null : _showAddAdminDialog,
+              style: FilledButton.styleFrom(backgroundColor: _orange),
+              icon: const Icon(Icons.person_add_alt_1),
+              label: const Text('Add Admin'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+          stream: FirebaseFirestore.instance
+              .collection('users')
+              .where('role', isEqualTo: 'admin')
+              .snapshots(),
+          builder: (context, snapshot) {
+            if (snapshot.hasError) {
+              return _panel(
+                'Admin Accounts',
+                const Text(
+                  'Could not load accounts. Check Firestore Rules '
+                  'and confirm the current user has the admin claim.',
+                  style: TextStyle(color: Colors.red),
+                ),
+              );
+            }
+
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const Center(
+                child: Padding(
+                  padding: EdgeInsets.all(24),
+                  child: CircularProgressIndicator(),
+                ),
+              );
+            }
+
+            final docs = snapshot.data?.docs ?? [];
+
+            if (docs.isEmpty) {
+              return _panel(
+                'Admin Accounts',
+                const Text('No Admin profiles found in Firestore.'),
+              );
+            }
+
+            return _panel(
+              'Admin Accounts (${docs.length})',
+              Column(
+                children: [
+                  for (var i = 0; i < docs.length; i++) ...[
+                    if (i > 0) const Divider(color: _line),
+                    Builder(
+                      builder: (context) {
+                        final data = docs[i].data();
+                        final active = data['isActive'] == true;
+                        final name = (data['name'] ?? 'Unnamed Admin')
+                            .toString();
+                        final email = (data['email'] ?? '').toString();
+
+                        return _simpleRecord(
+                          name,
+                          '$email • UID: ${docs[i].id}',
+                          'Administrator',
+                          active ? 'Active' : 'Inactive',
+                          active ? Colors.green : Colors.red,
+                        );
+                      },
+                    ),
+                  ],
+                ],
+              ),
+            );
+          },
+        ),
+        const SizedBox(height: 12),
+        const Text(
+          'Account list is read from Firestore. Creating an Authentication '
+          'account and assigning admin privileges requires the trusted '
+          'local Admin SDK setup.',
+          style: TextStyle(fontSize: 11, color: _muted),
+        ),
+      ],
+    );
+  }
+
+  void _showAddAdminDialog() {
+    final nameController = TextEditingController();
+    final emailController = TextEditingController();
+
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Add Admin'),
+        content: SizedBox(
+          width: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameController,
+                decoration: const InputDecoration(
+                  labelText: 'Full name',
+                  border: OutlineInputBorder(),
+                ),
+              ),
               const SizedBox(height: 12),
-              Text(
-                'Demo list for $_selected. Live records and account actions require role-secured Firebase integration.',
-                style: const TextStyle(fontSize: 11, color: _muted),
+              TextField(
+                controller: emailController,
+                keyboardType: TextInputType.emailAddress,
+                decoration: const InputDecoration(
+                  labelText: 'Email address',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'This form collects the details only. It does not create '
+                'an Authentication account or grant admin privileges yet.',
+                style: TextStyle(fontSize: 12, color: _muted),
               ),
             ],
           ),
         ),
-      ],
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: _orange),
+            onPressed: () {
+              final name = nameController.text.trim();
+              final email = emailController.text.trim();
+
+              if (name.isEmpty ||
+                  !RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(email)) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Enter a name and valid email address.'),
+                  ),
+                );
+                return;
+              }
+
+              Navigator.pop(dialogContext);
+
+              _message(
+                'Details validated. Next, create the account through '
+                'the trusted local Admin SDK setup.',
+              );
+            },
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
     );
   }
 
