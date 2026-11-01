@@ -4,6 +4,7 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // Authentication helpers
     function signedIn() {
       return request.auth != null;
     }
@@ -17,14 +18,10 @@ service cloud.firestore {
         && request.auth.token.admin == true;
     }
 
-    match /users/{uid} {
-      // Users can read their own profile.
-      // Verified admins can read user profiles for the dashboard.
-      allow read: if isOwner(uid) || isAdmin();
-
-      // Public registration is restricted to Student and Parent.
-      allow create: if isOwner(uid)
-        && request.resource.data.uid == request.auth.uid
+    // Student and Parent registration
+    function validPublicUser(uid) {
+      return isOwner(uid)
+        && request.resource.data.uid == uid
         && request.resource.data.email == request.auth.token.email
         && request.resource.data.role in ['student', 'parent']
         && request.resource.data.isActive == true
@@ -36,17 +33,108 @@ service cloud.firestore {
           'createdAt',
           'isActive'
         ]);
+    }
 
-      // Profile changes and deletions are not allowed from the client.
+    // Users collection
+    match /users/{uid} {
+
+      allow read: if isOwner(uid) || isAdmin();
+
+      // Student / Parent self-registration
+      // Driver profile creation only by verified Admin
+      allow create: if validPublicUser(uid)
+        || (
+          isAdmin()
+          && request.resource.data.uid == uid
+          && request.resource.data.role == 'driver'
+          && request.resource.data.isActive == true
+          && request.resource.data.keys().hasOnly([
+            'uid',
+            'name',
+            'email',
+            'role',
+            'mobile',
+            'employeeId',
+            'busNumber',
+            'createdAt',
+            'approvedAt',
+            'isActive'
+          ])
+        );
+
+      // Profile updates are disabled for now
       allow update, delete: if false;
     }
 
-    // These collections remain blocked until secure rules are added.
-    match /trips/{tripId} {
+    // Driver registration requests
+    match /driver_requests/{uid} {
+
+      // Driver can read own request; Admin can read all
+      allow read: if isOwner(uid) || isAdmin();
+
+      // Driver submits a pending request
+      allow create: if isOwner(uid)
+        && request.resource.data.uid == uid
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.status == 'pending'
+        && request.resource.data.keys().hasOnly([
+          'uid',
+          'name',
+          'email',
+          'mobile',
+          'employeeId',
+          'busNumber',
+          'status',
+          'createdAt'
+        ]);
+
+      // Only Admin can approve or reject
+      allow update: if isAdmin()
+        && request.resource.data.diff(resource.data)
+          .affectedKeys().hasOnly([
+            'status',
+            'reviewedAt',
+            'reviewedBy'
+          ])
+        && request.resource.data.status in [
+          'approved',
+          'rejected'
+        ]
+        && request.resource.data.reviewedBy == request.auth.uid;
+
+      allow delete: if false;
+    }
+
+    // Other collections remain blocked until integration
+    match /buses/{id} {
       allow read, write: if false;
     }
 
-    match /sos_alerts/{alertId} {
+    match /routes/{id} {
+      allow read, write: if false;
+    }
+
+    match /bus_history/{id} {
+      allow read, write: if false;
+    }
+
+    match /trips/{id} {
+      allow read, write: if false;
+    }
+
+    match /attendance/{id} {
+      allow read, write: if false;
+    }
+
+    match /maintenance/{id} {
+      allow read, write: if false;
+    }
+
+    match /notifications/{id} {
+      allow read, write: if false;
+    }
+
+    match /sos_alerts/{id} {
       allow read, write: if false;
     }
   }

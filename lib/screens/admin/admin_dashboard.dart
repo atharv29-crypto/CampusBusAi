@@ -134,13 +134,15 @@ class _AdminDashboardState extends State<AdminDashboard> {
         'reviewedBy': FirebaseAuth.instance.currentUser?.uid,
       });
       await batch.commit();
-      if (mounted)
+      if (mounted) {
         _message(approve ? 'Driver approved.' : 'Driver request rejected.');
+      }
     } on FirebaseException catch (e) {
-      if (mounted)
+      if (mounted) {
         _message(
           'Could not update request (${e.code}). Check Firestore rules.',
         );
+      }
     } catch (e) {
       if (mounted) _message('Action failed: $e');
     } finally {
@@ -476,7 +478,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
               ),
             if (_selected == 'All Buses')
               FilledButton.icon(
-                onPressed: () => _editDialog('Add Bus'),
+                onPressed: () => _editBus(),
                 style: FilledButton.styleFrom(backgroundColor: _orange),
                 icon: const Icon(Icons.add),
                 label: const Text('Add Bus'),
@@ -735,18 +737,23 @@ class _AdminDashboardState extends State<AdminDashboard> {
   }
 
   String _subtitle(String page) {
-    if (page == 'Overview')
+    if (page == 'Overview') {
       return 'Monitor college bus operations from one place.';
-    if (page == 'Driver Approvals')
+    }
+    if (page == 'Driver Approvals') {
       return 'Review driver registrations and approve verified accounts.';
-    if (page.contains('Attendance'))
+    }
+    if (page.contains('Attendance')) {
       return 'Review student and driver attendance records.';
-    if (page.contains('Route') || page.contains('Stops'))
+    }
+    if (page.contains('Route') || page.contains('Stops')) {
       return 'Manage routes, stops, assignments and route status.';
+    }
     if (page.contains('Bus') ||
         page.contains('Fleet') ||
-        page.contains('Maintenance'))
+        page.contains('Maintenance')) {
       return 'Manage vehicles, service schedules and fleet status.';
+    }
     return 'Manage ${page.toLowerCase()} for CampusBusAI 360.';
   }
 
@@ -821,7 +828,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
       const SizedBox(height: 18),
       LayoutBuilder(
         builder: (context, c) {
-          if (c.maxWidth < 800)
+          if (c.maxWidth < 800) {
             return Column(
               children: [
                 _panel('Today\'s Bus Status', _busTable(compact: true)),
@@ -831,6 +838,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
                 _panel('Quick Management', _quickActions()),
               ],
             );
+          }
           return Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -1140,16 +1148,18 @@ class _AdminDashboardState extends State<AdminDashboard> {
                 .orderBy('createdAt', descending: true)
                 .snapshots(),
             builder: (context, snapshot) {
-              if (snapshot.hasError)
+              if (snapshot.hasError) {
                 return Center(
                   child: Text('Could not load requests: ${snapshot.error}'),
                 );
-              if (!snapshot.hasData)
+              }
+              if (!snapshot.hasData) {
                 return const Center(child: CircularProgressIndicator());
+              }
               final docs = snapshot.data!.docs
                   .where((d) => (d.data()['status'] ?? 'pending') == 'pending')
                   .toList();
-              if (docs.isEmpty)
+              if (docs.isEmpty) {
                 return const Center(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
@@ -1160,9 +1170,10 @@ class _AdminDashboardState extends State<AdminDashboard> {
                     ],
                   ),
                 );
+              }
               return ListView.separated(
                 itemCount: docs.length,
-                separatorBuilder: (_, __) => const SizedBox(height: 10),
+                separatorBuilder: (_, _) => const SizedBox(height: 10),
                 itemBuilder: (context, i) {
                   final doc = docs[i];
                   final d = doc.data();
@@ -1542,75 +1553,649 @@ class _AdminDashboardState extends State<AdminDashboard> {
     ),
   );
 
-  Widget _busesPage() => Column(
-    children: [
-      LayoutBuilder(
-        builder: (context, c) {
-          final cols = c.maxWidth > 750 ? 3 : 1;
-          final w = (c.maxWidth - (cols - 1) * 12) / cols;
-          final items = [
-            ('Total Buses', '12', Icons.directions_bus, _blue),
-            ('Active Buses', '10', Icons.check_circle, const Color(0xFF15966A)),
-            ('Maintenance Due', '2', Icons.build_circle, _orange),
-          ];
-          return Wrap(
-            spacing: 12,
-            runSpacing: 12,
-            children: [
-              for (final x in items)
-                SizedBox(
-                  width: w,
-                  child: _statCard(x.$1, x.$2, 'Demo values', x.$3, x.$4),
+  Widget _busesPage() => StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+    stream: FirebaseFirestore.instance.collection('buses').snapshots(),
+    builder: (context, snapshot) {
+      if (snapshot.hasError)
+        return _panel(
+          'Bus List',
+          Text('Could not load buses: ${snapshot.error}'),
+        );
+      if (snapshot.connectionState == ConnectionState.waiting)
+        return const Center(child: CircularProgressIndicator());
+      final buses = snapshot.data?.docs ?? [];
+      final active = buses.where((b) => b.data()['isActive'] == true).length;
+      final maintenance = buses
+          .where((b) => (b.data()['status'] ?? '') == 'Maintenance')
+          .length;
+      return Column(
+        children: [
+          LayoutBuilder(
+            builder: (context, c) {
+              final cols = c.maxWidth > 750 ? 3 : 1;
+              final w = (c.maxWidth - (cols - 1) * 12) / cols;
+              final items = [
+                ('Total Buses', '${buses.length}', Icons.directions_bus, _blue),
+                (
+                  'Active Buses',
+                  '$active',
+                  Icons.check_circle,
+                  const Color(0xFF15966A),
                 ),
-            ],
-          );
-        },
-      ),
-      const SizedBox(height: 16),
-      _panel(
-        _selected,
-        Column(
-          children: [
-            _busRow(
-              'BUS-A01',
-              'Ramesh Patil',
-              'YSPM Main Route',
-              'Active',
-              Colors.green,
-            ),
-            const Divider(color: _line),
-            _busRow('BUS-A02', 'S. Jadhav', 'City Route', 'Idle', _orange),
-            const Divider(color: _line),
-            _busRow(
-              'BUS-A03',
-              'Unassigned',
-              'Route pending',
-              'Maintenance',
-              Colors.red,
-            ),
-            const Divider(color: _line),
-            _busRow(
-              'BUS-A04',
-              'P. More',
-              'Wadhe Route',
-              'Active',
-              Colors.green,
-            ),
-            const SizedBox(height: 12),
-            Align(
-              alignment: Alignment.centerRight,
-              child: FilledButton.icon(
-                style: FilledButton.styleFrom(backgroundColor: _orange),
-                onPressed: () => _editDialog('Add / Edit Bus'),
-                icon: const Icon(Icons.add),
-                label: const Text('Add / Edit Bus'),
+                ('Maintenance', '$maintenance', Icons.build_circle, _orange),
+              ];
+              return Wrap(
+                spacing: 12,
+                runSpacing: 12,
+                children: [
+                  for (final x in items)
+                    SizedBox(
+                      width: w,
+                      child: _statCard(
+                        x.$1,
+                        x.$2,
+                        'Firestore records',
+                        x.$3,
+                        x.$4,
+                      ),
+                    ),
+                ],
+              );
+            },
+          ),
+          const SizedBox(height: 16),
+          _panel(
+            'Bus List',
+            buses.isEmpty
+                ? const Padding(
+                    padding: EdgeInsets.all(24),
+                    child: Center(
+                      child: Text(
+                        'No buses added yet. Click Add Bus to create the first bus.',
+                      ),
+                    ),
+                  )
+                : Column(
+                    children: [
+                      for (var i = 0; i < buses.length; i++) ...[
+                        _busFirestoreRow(buses[i]),
+                        if (i != buses.length - 1) const Divider(color: _line),
+                      ],
+                    ],
+                  ),
+          ),
+        ],
+      );
+    },
+  );
+
+  Widget _busFirestoreRow(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+    final d = doc.data();
+    final active = d['isActive'] == true;
+    final status = (d['status'] ?? (active ? 'Active' : 'Inactive')).toString();
+    final color = !active
+        ? _muted
+        : status == 'Maintenance'
+        ? _orange
+        : const Color(0xFF15966A);
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: () => _showBusDetails(doc.id),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
+          child: Row(
+            children: [
+              const Icon(Icons.directions_bus_filled, color: _orange, size: 28),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      (d['busNumber'] ?? 'Unnamed Bus').toString(),
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: _dark,
+                      ),
+                    ),
+                    Text(
+                      '${d['registrationNumber'] ?? 'Registration not set'} • ${d['routeName'] ?? 'Route not assigned'}',
+                      style: const TextStyle(fontSize: 11, color: _muted),
+                    ),
+                    Text(
+                      'Driver: ${d['driverName'] ?? 'Not assigned'} • Capacity: ${d['capacity'] ?? '-'}',
+                      style: const TextStyle(fontSize: 10, color: _muted),
+                    ),
+                  ],
+                ),
               ),
-            ),
-          ],
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: .12),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  active ? status : 'Inactive',
+                  style: TextStyle(
+                    color: color,
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              const Icon(Icons.chevron_right, color: _muted),
+            ],
+          ),
         ),
       ),
-    ],
+    );
+  }
+
+  Future<void> _editBus({String? busId, Map<String, dynamic>? existing}) async {
+    final d = existing ?? {};
+    final busNumber = TextEditingController(
+      text: d['busNumber']?.toString() ?? '',
+    );
+    final registration = TextEditingController(
+      text: d['registrationNumber']?.toString() ?? '',
+    );
+    final route = TextEditingController(text: d['routeName']?.toString() ?? '');
+    final driverName = TextEditingController(
+      text: d['driverName']?.toString() ?? '',
+    );
+    final driverId = TextEditingController(
+      text: d['driverId']?.toString() ?? '',
+    );
+    final capacity = TextEditingController(
+      text: d['capacity']?.toString() ?? '',
+    );
+    final departure = TextEditingController(
+      text: d['departureTime']?.toString() ?? '',
+    );
+    final arrival = TextEditingController(
+      text: d['arrivalTime']?.toString() ?? '',
+    );
+    final stops = TextEditingController(
+      text:
+          (d['stops'] is List
+              ? (d['stops'] as List).join(', ')
+              : d['stops']?.toString()) ??
+          '',
+    );
+    String status = (d['status'] ?? 'Active').toString();
+    final formKey = GlobalKey<FormState>();
+    try {
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => StatefulBuilder(
+          builder: (ctx, setDialogState) => AlertDialog(
+            title: Text(busId == null ? 'Add Bus' : 'Edit Bus'),
+            content: SizedBox(
+              width: 480,
+              child: SingleChildScrollView(
+                child: Form(
+                  key: formKey,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _busInput(busNumber, 'Bus Number', required: true),
+                      _busInput(
+                        registration,
+                        'Registration Number',
+                        required: true,
+                      ),
+                      _busInput(route, 'Route Name'),
+                      _busInput(driverName, 'Driver Name'),
+                      _busInput(driverId, 'Driver UID (optional)'),
+                      _busInput(capacity, 'Capacity', number: true),
+                      _busInput(departure, 'Departure Time'),
+                      _busInput(arrival, 'Arrival Time'),
+                      _busInput(stops, 'Stops (comma separated)', maxLines: 2),
+                      const SizedBox(height: 10),
+                      DropdownButtonFormField<String>(
+                        value: status,
+                        decoration: const InputDecoration(
+                          labelText: 'Bus Status',
+                          border: OutlineInputBorder(),
+                        ),
+                        items: const [
+                          DropdownMenuItem(
+                            value: 'Active',
+                            child: Text('Active'),
+                          ),
+                          DropdownMenuItem(value: 'Idle', child: Text('Idle')),
+                          DropdownMenuItem(
+                            value: 'Maintenance',
+                            child: Text('Maintenance'),
+                          ),
+                        ],
+                        onChanged: (v) {
+                          if (v != null) setDialogState(() => status = v);
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                style: FilledButton.styleFrom(backgroundColor: _orange),
+                onPressed: () async {
+                  if (!formKey.currentState!.validate()) return;
+                  final uid = FirebaseAuth.instance.currentUser?.uid;
+                  if (uid == null) {
+                    _message('Please login again.');
+                    return;
+                  }
+                  final ref = FirebaseFirestore.instance.collection('buses');
+                  final data = <String, dynamic>{
+                    'busNumber': busNumber.text.trim(),
+                    'registrationNumber': registration.text.trim(),
+                    'routeName': route.text.trim(),
+                    'driverName': driverName.text.trim(),
+                    'driverId': driverId.text.trim(),
+                    'capacity': int.tryParse(capacity.text.trim()) ?? 0,
+                    'departureTime': departure.text.trim(),
+                    'arrivalTime': arrival.text.trim(),
+                    'stops': stops.text
+                        .split(',')
+                        .map((e) => e.trim())
+                        .where((e) => e.isNotEmpty)
+                        .toList(),
+                    'status': status,
+                    'isActive': status != 'Inactive',
+                    'updatedAt': FieldValue.serverTimestamp(),
+                    'updatedBy': uid,
+                  };
+                  try {
+                    if (busId == null) {
+                      data['createdAt'] = FieldValue.serverTimestamp();
+                      data['createdBy'] = uid;
+                      final created = await ref.add(data);
+                      await _addBusHistory(
+                        created.id,
+                        'Bus Added',
+                        'Bus ${busNumber.text.trim()} was added.',
+                      );
+                    } else {
+                      await ref.doc(busId).update(data);
+                      await _addBusHistory(
+                        busId,
+                        'Bus Updated',
+                        'Bus details were updated.',
+                      );
+                    }
+                    if (ctx.mounted) Navigator.pop(ctx);
+                    if (mounted)
+                      _message(
+                        busId == null
+                            ? 'Bus added successfully.'
+                            : 'Bus updated successfully.',
+                      );
+                  } on FirebaseException catch (e) {
+                    if (mounted)
+                      _message(
+                        'Save failed (${e.code}). Check Firestore rules.',
+                      );
+                  } catch (e) {
+                    if (mounted) _message('Save failed: $e');
+                  }
+                },
+                child: const Text('Save Bus'),
+              ),
+            ],
+          ),
+        ),
+      );
+    } finally {
+      busNumber.dispose();
+      registration.dispose();
+      route.dispose();
+      driverName.dispose();
+      driverId.dispose();
+      capacity.dispose();
+      departure.dispose();
+      arrival.dispose();
+      stops.dispose();
+    }
+  }
+
+  Widget _busInput(
+    TextEditingController controller,
+    String label, {
+    bool required = false,
+    bool number = false,
+    int maxLines = 1,
+  }) => Padding(
+    padding: const EdgeInsets.only(bottom: 10),
+    child: TextFormField(
+      controller: controller,
+      maxLines: maxLines,
+      keyboardType: number ? TextInputType.number : TextInputType.text,
+      decoration: InputDecoration(
+        labelText: label,
+        border: const OutlineInputBorder(),
+      ),
+      validator: required
+          ? (v) => (v == null || v.trim().isEmpty) ? '$label is required' : null
+          : null,
+    ),
   );
+
+  Future<void> _addBusHistory(
+    String busId,
+    String action,
+    String description,
+  ) async {
+    await FirebaseFirestore.instance.collection('bus_history').add({
+      'busId': busId,
+      'action': action,
+      'description': description,
+      'changedBy': FirebaseAuth.instance.currentUser?.uid,
+      'timestamp': FieldValue.serverTimestamp(),
+    });
+  }
+
+  Future<void> _changeBusActive(
+    String busId,
+    bool active,
+    String busNumber,
+  ) async {
+    try {
+      await FirebaseFirestore.instance.collection('buses').doc(busId).update({
+        'isActive': active,
+        'status': active ? 'Active' : 'Inactive',
+        'updatedAt': FieldValue.serverTimestamp(),
+        'updatedBy': FirebaseAuth.instance.currentUser?.uid,
+      });
+      await _addBusHistory(
+        busId,
+        active ? 'Bus Activated' : 'Bus Deactivated',
+        'Bus $busNumber was ${active ? 'activated' : 'deactivated'}.',
+      );
+      if (mounted) _message(active ? 'Bus activated.' : 'Bus deactivated.');
+    } on FirebaseException catch (e) {
+      if (mounted)
+        _message('Status update failed (${e.code}). Check Firestore rules.');
+    }
+  }
+
+  void _showBusDetails(String busId) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => Dialog(
+        child: SizedBox(
+          width: 680,
+          child: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+            stream: FirebaseFirestore.instance
+                .collection('buses')
+                .doc(busId)
+                .snapshots(),
+            builder: (ctx, snap) {
+              if (snap.hasError)
+                return const Padding(
+                  padding: EdgeInsets.all(24),
+                  child: Text('Unable to load bus details.'),
+                );
+              if (!snap.hasData)
+                return const Padding(
+                  padding: EdgeInsets.all(24),
+                  child: Center(child: CircularProgressIndicator()),
+                );
+              if (!snap.data!.exists)
+                return const Padding(
+                  padding: EdgeInsets.all(24),
+                  child: Text('Bus record not found.'),
+                );
+              final d = snap.data!.data()!;
+              final active = d['isActive'] == true;
+              final busNumber = (d['busNumber'] ?? 'Bus').toString();
+              return Padding(
+                padding: const EdgeInsets.all(22),
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              busNumber,
+                              style: const TextStyle(
+                                fontSize: 22,
+                                fontWeight: FontWeight.w800,
+                                color: _dark,
+                              ),
+                            ),
+                          ),
+                          Chip(
+                            label: Text(
+                              active
+                                  ? (d['status'] ?? 'Active').toString()
+                                  : 'Inactive',
+                            ),
+                            backgroundColor: active
+                                ? const Color(0xFFE3F6EC)
+                                : const Color(0xFFECEFF3),
+                          ),
+                        ],
+                      ),
+                      Wrap(
+                        spacing: 8,
+                        children: [
+                          OutlinedButton.icon(
+                            onPressed: () =>
+                                _editBus(busId: busId, existing: d),
+                            icon: const Icon(Icons.edit),
+                            label: const Text('Edit'),
+                          ),
+                          FilledButton.tonalIcon(
+                            onPressed: () =>
+                                _changeBusActive(busId, !active, busNumber),
+                            icon: Icon(
+                              active ? Icons.pause_circle : Icons.play_circle,
+                            ),
+                            label: Text(active ? 'Deactivate' : 'Activate'),
+                          ),
+                        ],
+                      ),
+                      const Divider(height: 26),
+                      _detailLine(
+                        'Registration Number',
+                        d['registrationNumber'],
+                      ),
+                      _detailLine('Driver', d['driverName']),
+                      _detailLine('Driver UID', d['driverId']),
+                      _detailLine('Route', d['routeName']),
+                      _detailLine('Capacity', d['capacity']),
+                      _detailLine('Departure', d['departureTime']),
+                      _detailLine('Arrival', d['arrivalTime']),
+                      _detailLine(
+                        'Stops',
+                        d['stops'] is List
+                            ? (d['stops'] as List).join(' → ')
+                            : d['stops'],
+                      ),
+                      const Divider(height: 26),
+                      const Text(
+                        'Bus History',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      SizedBox(
+                        height: 190,
+                        child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                          stream: FirebaseFirestore.instance
+                              .collection('bus_history')
+                              .where('busId', isEqualTo: busId)
+                              .snapshots(),
+                          builder: (ctx, history) {
+                            if (history.hasError)
+                              return const Text(
+                                'History unavailable. Check Firestore rules/indexes.',
+                              );
+                            if (!history.hasData)
+                              return const Center(
+                                child: CircularProgressIndicator(),
+                              );
+                            final records = [...history.data!.docs]
+                              ..sort(
+                                (a, b) =>
+                                    ((b.data()['timestamp'] as Timestamp?)
+                                                ?.millisecondsSinceEpoch ??
+                                            0)
+                                        .compareTo(
+                                          (a.data()['timestamp'] as Timestamp?)
+                                                  ?.millisecondsSinceEpoch ??
+                                              0,
+                                        ),
+                              );
+                            if (records.isEmpty)
+                              return const Text(
+                                'No history recorded for this bus yet.',
+                              );
+                            return ListView(
+                              children: [
+                                for (final h in records)
+                                  ListTile(
+                                    dense: true,
+                                    leading: const Icon(
+                                      Icons.history,
+                                      color: _orange,
+                                    ),
+                                    title: Text(
+                                      (h.data()['action'] ?? 'Updated')
+                                          .toString(),
+                                    ),
+                                    subtitle: Text(
+                                      (h.data()['description'] ?? '')
+                                          .toString(),
+                                    ),
+                                    trailing: Text(
+                                      _formatBusTime(h.data()['timestamp']),
+                                      style: const TextStyle(
+                                        fontSize: 10,
+                                        color: _muted,
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            );
+                          },
+                        ),
+                      ),
+                      const Text(
+                        'Trip History',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      SizedBox(
+                        height: 150,
+                        child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                          stream: FirebaseFirestore.instance
+                              .collection('trips')
+                              .where('busId', isEqualTo: busId)
+                              .snapshots(),
+                          builder: (ctx, trips) {
+                            if (trips.hasError)
+                              return const Text('Trip history unavailable.');
+                            if (!trips.hasData)
+                              return const Center(
+                                child: CircularProgressIndicator(),
+                              );
+                            if (trips.data!.docs.isEmpty)
+                              return const Text(
+                                'No trips recorded for this bus yet.',
+                              );
+                            return ListView(
+                              children: [
+                                for (final t in trips.data!.docs)
+                                  ListTile(
+                                    dense: true,
+                                    leading: const Icon(
+                                      Icons.route,
+                                      color: _blue,
+                                    ),
+                                    title: Text(
+                                      (t.data()['routeName'] ??
+                                              t.data()['status'] ??
+                                              'Trip')
+                                          .toString(),
+                                    ),
+                                    subtitle: Text(
+                                      'Driver: ${t.data()['driverName'] ?? t.data()['driverId'] ?? '-'}',
+                                    ),
+                                  ),
+                              ],
+                            );
+                          },
+                        ),
+                      ),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton(
+                          onPressed: () => Navigator.pop(ctx),
+                          child: const Text('Close'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _detailLine(String label, dynamic value) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 4),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 150,
+          child: Text(
+            label,
+            style: const TextStyle(color: _muted, fontSize: 12),
+          ),
+        ),
+        Expanded(
+          child: Text(
+            (value ?? '-').toString(),
+            style: const TextStyle(
+              color: _dark,
+              fontWeight: FontWeight.w600,
+              fontSize: 12,
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+
+  String _formatBusTime(dynamic value) {
+    if (value is Timestamp) {
+      final dt = value.toDate();
+      return '${dt.day}/${dt.month}/${dt.year}';
+    }
+    return 'Pending';
+  }
 
   Widget _attendancePage() => Column(
     children: [
@@ -2320,8 +2905,9 @@ class _MapPainter extends CustomPainter {
       Offset(size.width * .42, size.height * .68),
       Offset(size.width * .55, size.height * .42),
       Offset(size.width * .72, size.height * .5),
-    ])
+    ]) {
       canvas.drawCircle(p, 6, dot);
+    }
   }
 
   @override

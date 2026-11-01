@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 const driverOrange = Color(0xFFFF7900);
 const driverDark = Color(0xFF172033);
@@ -64,104 +66,154 @@ class _DriverDashboardState extends State<DriverDashboard> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: driverBg,
-      body: Column(
-        children: [
-          _topBar(),
-          Expanded(
-            child: Row(
-              children: [
-                if (MediaQuery.sizeOf(context).width >= 1100) _sidebar(),
-                Expanded(
-                  child: selectedTab == 'Bus Maintenance'
-                      ? SingleChildScrollView(
-                          padding: const EdgeInsets.all(20),
-                          child: _maintenancePage(),
-                        )
-                      : SingleChildScrollView(
-                          padding: const EdgeInsets.all(20),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              _welcome(),
-                              const SizedBox(height: 20),
-                              _summaryCards(),
-                              const SizedBox(height: 20),
-                              LayoutBuilder(
-                                builder: (context, constraints) {
-                                  if (constraints.maxWidth < 850) {
-                                    return Column(
-                                      children: [
-                                        _tripPanel(),
-                                        const SizedBox(height: 16),
-                                        _routePanel(),
-                                      ],
-                                    );
-                                  }
+    final user = FirebaseAuth.instance.currentUser;
 
-                                  return Row(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Expanded(child: _tripPanel()),
-                                      const SizedBox(width: 16),
-                                      Expanded(child: _routePanel()),
-                                    ],
-                                  );
-                                },
-                              ),
-                              const SizedBox(height: 16),
-                              LayoutBuilder(
-                                builder: (context, constraints) {
-                                  if (constraints.maxWidth < 850) {
-                                    return Column(
-                                      children: [
-                                        _stopWisePanel(),
-                                        const SizedBox(height: 16),
-                                        _studentsPanel(),
-                                        const SizedBox(height: 16),
-                                        _activityPanel(),
-                                      ],
-                                    );
-                                  }
+    if (user == null) {
+      return const Scaffold(
+        body: Center(
+          child: Text('Please sign in to access the Driver Dashboard.'),
+        ),
+      );
+    }
 
-                                  return Row(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Expanded(child: _stopWisePanel()),
-                                      const SizedBox(width: 14),
-                                      Expanded(child: _studentsPanel()),
-                                      const SizedBox(width: 14),
-                                      Expanded(child: _activityPanel()),
-                                    ],
-                                  );
-                                },
-                              ),
-                              const SizedBox(height: 20),
-                              const Center(
-                                child: Text(
-                                  'CampusBusAI 360 • Driver Portal • Demo Data',
-                                  style: TextStyle(
-                                    color: driverMuted,
-                                    fontSize: 12,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                ),
-              ],
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return Scaffold(
+            body: Center(
+              child: Text('Unable to load driver profile: ${snapshot.error}'),
             ),
+          );
+        }
+
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+
+        final profile = snapshot.data?.data();
+        if (profile == null ||
+            profile['role'] != 'driver' ||
+            profile['isActive'] != true) {
+          return const Scaffold(
+            body: Center(
+              child: Text(
+                'Driver profile not found or account is inactive. Contact Admin.',
+              ),
+            ),
+          );
+        }
+
+        final driverName = (profile['name'] ?? 'Driver').toString();
+        final busNumber = (profile['busNumber'] ?? 'NOT-ASSIGNED').toString();
+        final routeName = (profile['routeName'] ?? 'Route not assigned')
+            .toString();
+
+        return Scaffold(
+          backgroundColor: driverBg,
+          body: Column(
+            children: [
+              _topBar(driverName),
+              Expanded(
+                child: Row(
+                  children: [
+                    if (MediaQuery.sizeOf(context).width >= 1100) _sidebar(),
+                    Expanded(
+                      child: selectedTab == 'Bus Maintenance'
+                          ? SingleChildScrollView(
+                              padding: const EdgeInsets.all(20),
+                              child: _maintenancePage(busNumber, routeName),
+                            )
+                          : SingleChildScrollView(
+                              padding: const EdgeInsets.all(20),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  _welcome(driverName, busNumber, routeName),
+                                  const SizedBox(height: 20),
+                                  _summaryCards(busNumber, routeName),
+                                  const SizedBox(height: 20),
+                                  LayoutBuilder(
+                                    builder: (context, constraints) {
+                                      if (constraints.maxWidth < 850) {
+                                        return Column(
+                                          children: [
+                                            _tripPanel(),
+                                            const SizedBox(height: 16),
+                                            _routePanel(),
+                                          ],
+                                        );
+                                      }
+
+                                      return Row(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Expanded(child: _tripPanel()),
+                                          const SizedBox(width: 16),
+                                          Expanded(child: _routePanel()),
+                                        ],
+                                      );
+                                    },
+                                  ),
+                                  const SizedBox(height: 16),
+                                  LayoutBuilder(
+                                    builder: (context, constraints) {
+                                      if (constraints.maxWidth < 850) {
+                                        return Column(
+                                          children: [
+                                            _stopWisePanel(),
+                                            const SizedBox(height: 16),
+                                            _studentsPanel(),
+                                            const SizedBox(height: 16),
+                                            _activityPanel(),
+                                          ],
+                                        );
+                                      }
+
+                                      return Row(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Expanded(child: _stopWisePanel()),
+                                          const SizedBox(width: 14),
+                                          Expanded(child: _studentsPanel()),
+                                          const SizedBox(width: 14),
+                                          Expanded(child: _activityPanel()),
+                                        ],
+                                      );
+                                    },
+                                  ),
+                                  const SizedBox(height: 20),
+                                  const Center(
+                                    child: Text(
+                                      'CampusBusAI 360 • Driver Profile: Live • Trip/Attendance: Demo',
+                                      style: TextStyle(
+                                        color: driverMuted,
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 
-  Widget _topBar() {
+  Widget _topBar(String driverName) {
     return Container(
       height: 75,
       color: Colors.white,
@@ -225,14 +277,11 @@ class _DriverDashboardState extends State<DriverDashboard> {
           ),
           if (MediaQuery.sizeOf(context).width > 500) ...[
             const SizedBox(width: 10),
-            const Column(
+            Column(
               mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'Ramesh Patil',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
+                Text(driverName, style: TextStyle(fontWeight: FontWeight.bold)),
                 Text(
                   'Driver',
                   style: TextStyle(color: driverMuted, fontSize: 12),
@@ -322,7 +371,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
     );
   }
 
-  Widget _maintenancePage() {
+  Widget _maintenancePage(String busNumber, String routeName) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -400,8 +449,8 @@ class _DriverDashboardState extends State<DriverDashboard> {
               ),
               _maintenanceInfoCard(
                 'Vehicle',
-                'BUS-01',
-                'YSPM Main Route',
+                busNumber,
+                routeName,
                 Icons.directions_bus,
                 Colors.blue,
               ),
@@ -689,17 +738,17 @@ class _DriverDashboardState extends State<DriverDashboard> {
     );
   }
 
-  Widget _welcome() {
+  Widget _welcome(String driverName, String busNumber, String routeName) {
     return Wrap(
       alignment: WrapAlignment.spaceBetween,
       crossAxisAlignment: WrapCrossAlignment.center,
       runSpacing: 12,
       children: [
-        const Column(
+        Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Hello, Ramesh! 👋',
+              'Hello, $driverName! 👋',
               style: TextStyle(
                 fontSize: 27,
                 fontWeight: FontWeight.bold,
@@ -719,7 +768,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
             color: Colors.white,
             borderRadius: BorderRadius.circular(13),
           ),
-          child: const Row(
+          child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(Icons.calendar_month, color: driverOrange),
@@ -732,7 +781,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
                     style: TextStyle(fontWeight: FontWeight.bold),
                   ),
                   Text(
-                    'BUS-01 • YSPM Main Route',
+                    '$busNumber • $routeName',
                     style: TextStyle(fontSize: 11, color: driverMuted),
                   ),
                 ],
@@ -744,7 +793,7 @@ class _DriverDashboardState extends State<DriverDashboard> {
     );
   }
 
-  Widget _summaryCards() {
+  Widget _summaryCards(String busNumber, String routeName) {
     return LayoutBuilder(
       builder: (context, constraints) {
         final columns = constraints.maxWidth >= 1100
@@ -757,8 +806,8 @@ class _DriverDashboardState extends State<DriverDashboard> {
         final cards = [
           [
             'Bus Number',
-            'BUS-01',
-            'YSPM Main Route',
+            busNumber,
+            routeName,
             Icons.directions_bus,
             driverOrange,
           ],
