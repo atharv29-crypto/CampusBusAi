@@ -4,7 +4,10 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Authentication helpers
+    // ==========================================
+    // AUTHENTICATION HELPERS
+    // ==========================================
+
     function signedIn() {
       return request.auth != null;
     }
@@ -18,7 +21,11 @@ service cloud.firestore {
         && request.auth.token.admin == true;
     }
 
-    // Student and Parent registration
+
+    // ==========================================
+    // STUDENT & PARENT VALIDATION
+    // ==========================================
+
     function validPublicUser(uid) {
       return isOwner(uid)
         && request.resource.data.uid == uid
@@ -35,13 +42,19 @@ service cloud.firestore {
         ]);
     }
 
-    // Users collection
+
+    // ==========================================
+    // USERS COLLECTION
+    // ==========================================
+
     match /users/{uid} {
 
+      // Owner can read own profile.
+      // Admin can read all profiles.
       allow read: if isOwner(uid) || isAdmin();
 
       // Student / Parent self-registration
-      // Driver profile creation only by verified Admin
+      // Driver profile creation by Admin only
       allow create: if validPublicUser(uid)
         || (
           isAdmin()
@@ -62,17 +75,22 @@ service cloud.firestore {
           ])
         );
 
-      // Profile updates are disabled for now
+      // Profile updates and deletion disabled
       allow update, delete: if false;
     }
 
-    // Driver registration requests
+
+    // ==========================================
+    // DRIVER REGISTRATION REQUESTS
+    // ==========================================
+
     match /driver_requests/{uid} {
 
-      // Driver can read own request; Admin can read all
+      // Driver can read own request.
+      // Admin can read all requests.
       allow read: if isOwner(uid) || isAdmin();
 
-      // Driver submits a pending request
+      // Driver submits registration request
       allow create: if isOwner(uid)
         && request.resource.data.uid == uid
         && request.resource.data.email == request.auth.token.email
@@ -102,40 +120,100 @@ service cloud.firestore {
         ]
         && request.resource.data.reviewedBy == request.auth.uid;
 
+      // No deletion allowed
       allow delete: if false;
     }
 
-    // Other collections remain blocked until integration
+
+    // ==========================================
+    // BUSES COLLECTION
+    // ==========================================
+
     match /buses/{id} {
-      allow read, write: if false;
+
+      // Only Admin can read buses
+      allow read: if isAdmin();
+
+      // Only Admin can add buses
+      allow create: if isAdmin();
+
+      // Only Admin can edit buses
+      allow update: if isAdmin();
+
+      // Only Admin can delete buses
+      allow delete: if isAdmin();
     }
+
+
+    // ==========================================
+    // BUS HISTORY COLLECTION
+    // ==========================================
+
+    match /bus_history/{id} {
+
+      // Only Admin can read history
+      allow read: if isAdmin();
+
+      // Only Admin can create history records
+      allow create: if isAdmin();
+
+      // History cannot be modified or deleted
+      allow update, delete: if false;
+    }
+
+
+    // ==========================================
+    // ROUTES COLLECTION
+    // ==========================================
 
     match /routes/{id} {
       allow read, write: if false;
     }
 
-    match /bus_history/{id} {
-      allow read, write: if false;
-    }
+
+    // ==========================================
+    // TRIPS COLLECTION
+    // ==========================================
 
     match /trips/{id} {
       allow read, write: if false;
     }
 
+
+    // ==========================================
+    // ATTENDANCE COLLECTION
+    // ==========================================
+
     match /attendance/{id} {
       allow read, write: if false;
     }
+
+
+    // ==========================================
+    // MAINTENANCE COLLECTION
+    // ==========================================
 
     match /maintenance/{id} {
       allow read, write: if false;
     }
 
+
+    // ==========================================
+    // NOTIFICATIONS COLLECTION
+    // ==========================================
+
     match /notifications/{id} {
       allow read, write: if false;
     }
 
+
+    // ==========================================
+    // SOS ALERTS COLLECTION
+    // ==========================================
+
     match /sos_alerts/{id} {
       allow read, write: if false;
     }
+
   }
 }
