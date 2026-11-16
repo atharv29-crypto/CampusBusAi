@@ -1,4 +1,9 @@
+import 'dart:convert';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart' hide Path;
+import 'package:http/http.dart' as http;
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
@@ -471,7 +476,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
             ),
             if (_selected == 'All Routes')
               FilledButton.icon(
-                onPressed: () => _editDialog('Add Route'),
+                onPressed: () => _openRouteBuilder(),
                 style: FilledButton.styleFrom(backgroundColor: _orange),
                 icon: const Icon(Icons.add),
                 label: const Text('Add Route'),
@@ -1453,105 +1458,379 @@ class _AdminDashboardState extends State<AdminDashboard> {
     ),
   );
 
-  Widget _routesPage() => Column(
-    children: [
-      LayoutBuilder(
-        builder: (context, c) {
-          final cols = c.maxWidth > 700 ? 3 : 1;
-          final w = (c.maxWidth - (cols - 1) * 12) / cols;
-          final items = [
-            ('Total Routes', '6', Icons.route, _blue),
-            ('Total Stops', '24', Icons.location_on, _orange),
-            (
-              'Assigned Buses',
-              '10',
-              Icons.directions_bus,
-              const Color(0xFF15966A),
-            ),
-          ];
-          return Wrap(
-            spacing: 12,
-            runSpacing: 12,
-            children: [
-              for (final x in items)
-                SizedBox(
-                  width: w,
-                  child: _statCard(x.$1, x.$2, 'Demo values', x.$3, x.$4),
+  Future<void> _openRouteBuilder({
+    String? routeId,
+    Map<String, dynamic>? route,
+  }) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) =>
+            AdminRouteBuilderPage(routeId: routeId, initialRoute: route),
+      ),
+    );
+  }
+
+  Widget _routesPage() => StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+    stream: FirebaseFirestore.instance.collection('routes').snapshots(),
+    builder: (context, snapshot) {
+      if (snapshot.hasError) {
+        return _panel(
+          'Routes',
+          Text('Could not load routes: ${snapshot.error}'),
+        );
+      }
+      if (!snapshot.hasData) {
+        return const Center(child: CircularProgressIndicator());
+      }
+
+      final docs = snapshot.data!.docs;
+      final totalStops = docs.fold<int>(
+        0,
+        (sum, d) => sum + ((d.data()['stops'] as List?)?.length ?? 0),
+      );
+
+      return Column(
+        children: [
+          LayoutBuilder(
+            builder: (context, c) {
+              final cols = c.maxWidth > 700 ? 3 : 1;
+              final w = (c.maxWidth - (cols - 1) * 12) / cols;
+              final items = [
+                ('Total Routes', '${docs.length}', Icons.route, _blue),
+                ('Total Stops', '$totalStops', Icons.location_on, _orange),
+                (
+                  'Assigned Buses',
+                  'Live in bus records',
+                  Icons.directions_bus,
+                  const Color(0xFF15966A),
                 ),
-            ],
-          );
-        },
-      ),
-      const SizedBox(height: 16),
-      _panel(
-        _selected,
-        Column(
-          children: [
-            _routeRow(
-              'Route 1 - Main',
-              'Satara MIDC → Power House → Karanje → YSPM',
-              'BUS-A01',
-            ),
-            const Divider(color: _line),
-            _routeRow(
-              'Route 2 - City',
-              'City Centre → Wadhe Phata → YSPM',
-              'BUS-A02',
-            ),
-            const Divider(color: _line),
-            _routeRow(
-              'Route 3 - Express',
-              'Arphal → Vaduth → Arale → YSPM',
-              'Unassigned',
-            ),
-            const SizedBox(height: 12),
-            Align(
-              alignment: Alignment.centerRight,
-              child: FilledButton.icon(
-                style: FilledButton.styleFrom(backgroundColor: _orange),
-                onPressed: () => _editDialog('Edit Route / Stops'),
-                icon: const Icon(Icons.edit_road),
-                label: const Text('Manage Route / Stops'),
-              ),
-            ),
-            const Text(
-              'Route list is demo data. Saving edits to other apps requires Firestore route integration.',
-              style: TextStyle(color: _muted, fontSize: 11),
-            ),
-          ],
-        ),
-      ),
-    ],
+              ];
+              return Wrap(
+                spacing: 12,
+                runSpacing: 12,
+                children: [
+                  for (final x in items)
+                    SizedBox(
+                      width: w,
+                      child: _statCard(
+                        x.$1,
+                        x.$2,
+                        'Firestore data',
+                        x.$3,
+                        x.$4,
+                      ),
+                    ),
+                ],
+              );
+            },
+          ),
+          const SizedBox(height: 16),
+          _panel(
+            _selected,
+            docs.isEmpty
+                ? const Padding(
+                    padding: EdgeInsets.all(24),
+                    child: Center(
+                      child: Text(
+                        'No routes yet. Click Add Route to create your first smart route.',
+                      ),
+                    ),
+                  )
+                : LayoutBuilder(
+                    builder: (context, constraints) {
+                      // Three route cards per row on desktop, then adapt for
+                      // tablet and mobile widths.
+                      final columns = constraints.maxWidth >= 900
+                          ? 3
+                          : constraints.maxWidth >= 580
+                          ? 2
+                          : 1;
+
+                      return GridView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        itemCount: docs.length,
+                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: columns,
+                          crossAxisSpacing: 14,
+                          mainAxisSpacing: 14,
+                          mainAxisExtent: 292,
+                        ),
+                        itemBuilder: (context, index) =>
+                            _firestoreRouteCard(docs[index]),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      );
+    },
   );
 
-  Widget _routeRow(String name, String stops, String bus) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 10),
-    child: Row(
-      children: [
-        const CircleAvatar(
-          backgroundColor: Color(0xFFFFE8D6),
-          child: Icon(Icons.alt_route, color: _orange),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Column(
+  Widget _firestoreRouteCard(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+    final d = doc.data();
+    final routeName = (d['routeName'] ?? d['name'] ?? 'Unnamed Route')
+        .toString();
+    final start = (d['startingPoint'] ?? '').toString();
+    final destination = (d['destination'] ?? 'Yashoda Technical Campus')
+        .toString();
+    final active = d['isActive'] != false;
+
+    final distance = d['distanceKm'] is num
+        ? '${(d['distanceKm'] as num).toStringAsFixed(1)} km'
+        : 'Distance N/A';
+    final duration = d['estimatedDurationMinutes'] is num
+        ? '${(d['estimatedDurationMinutes'] as num).round()} min'
+        : 'Time N/A';
+
+    // The saved `stops` array is already in route order:
+    // starting point -> manually selected intermediate stops -> campus.
+    final rawStops = d['stops'];
+    final allStops = rawStops is List
+        ? rawStops
+              .map((e) => e.toString())
+              .where((e) => e.trim().isNotEmpty)
+              .toList()
+        : <String>[];
+
+    final displayStops = allStops.isNotEmpty
+        ? allStops
+        : [if (start.isNotEmpty) start, destination];
+
+    return Container(
+      padding: const EdgeInsets.all(15),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: _line),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: .035),
+            blurRadius: 10,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(name, style: const TextStyle(fontWeight: FontWeight.bold)),
-              Text(stops, style: const TextStyle(fontSize: 11, color: _muted)),
+              Container(
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFE8D6),
+                  borderRadius: BorderRadius.circular(11),
+                ),
+                child: const Icon(Icons.alt_route_rounded, color: _orange),
+              ),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Text(
+                  routeName,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                    color: _dark,
+                  ),
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+                decoration: BoxDecoration(
+                  color: active
+                      ? const Color(0xFFE8F7EF)
+                      : const Color(0xFFF1F2F5),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  active ? 'Active' : 'Inactive',
+                  style: TextStyle(
+                    color: active ? const Color(0xFF16865C) : _muted,
+                    fontSize: 9,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
             ],
           ),
-        ),
-        if (MediaQuery.sizeOf(context).width > 650)
-          Text(bus, style: const TextStyle(fontSize: 11, color: _muted)),
-        IconButton(
-          tooltip: 'Edit',
-          onPressed: () => _editDialog('Edit $name'),
-          icon: const Icon(Icons.edit_outlined, color: _orange),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(child: _routeMetric(Icons.straighten_rounded, distance)),
+              const SizedBox(width: 8),
+              Expanded(child: _routeMetric(Icons.schedule_rounded, duration)),
+            ],
+          ),
+          const Divider(height: 20, color: _line),
+          const Text(
+            'ROUTE STOPS',
+            style: TextStyle(
+              fontSize: 9,
+              letterSpacing: .8,
+              fontWeight: FontWeight.w800,
+              color: _muted,
+            ),
+          ),
+          const SizedBox(height: 7),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (var i = 0; i < displayStops.length && i < 4; i++)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 5),
+                    child: Row(
+                      children: [
+                        Icon(
+                          i == 0
+                              ? Icons.trip_origin_rounded
+                              : i == displayStops.length - 1
+                              ? Icons.flag_rounded
+                              : Icons.location_on_rounded,
+                          size: 13,
+                          color: i == 0
+                              ? const Color(0xFF16865C)
+                              : i == displayStops.length - 1
+                              ? Colors.red
+                              : _orange,
+                        ),
+                        const SizedBox(width: 7),
+                        Expanded(
+                          child: Text(
+                            displayStops[i],
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 10,
+                              color: _dark,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                if (displayStops.length > 4)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 20),
+                    child: Text(
+                      '+ ${displayStops.length - 4} more stops',
+                      style: const TextStyle(fontSize: 9, color: _muted),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const Divider(height: 12, color: _line),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '${start.isEmpty ? (displayStops.isNotEmpty ? displayStops.first : 'Start not set') : start} → $destination',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 9, color: _muted),
+                ),
+              ),
+              IconButton(
+                tooltip: 'Edit route',
+                visualDensity: VisualDensity.compact,
+                onPressed: () => _openRouteBuilder(routeId: doc.id, route: d),
+                icon: const Icon(Icons.edit_outlined, color: _orange, size: 19),
+              ),
+              IconButton(
+                tooltip: 'Delete route',
+                visualDensity: VisualDensity.compact,
+                onPressed: () => _deleteRoute(doc.id, d),
+                icon: const Icon(
+                  Icons.delete_outline,
+                  color: Colors.red,
+                  size: 19,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _routeMetric(IconData icon, String value) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+    decoration: BoxDecoration(
+      color: _bg,
+      borderRadius: BorderRadius.circular(9),
+    ),
+    child: Row(
+      children: [
+        Icon(icon, size: 14, color: _orange),
+        const SizedBox(width: 5),
+        Expanded(
+          child: Text(
+            value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+              color: _dark,
+            ),
+          ),
         ),
       ],
     ),
   );
+
+  Future<void> _deleteRoute(String routeId, Map<String, dynamic> route) async {
+    final assigned = await FirebaseFirestore.instance
+        .collection('buses')
+        .where('routeId', isEqualTo: routeId)
+        .limit(1)
+        .get();
+    if (!mounted) return;
+    if (assigned.docs.isNotEmpty) {
+      _message(
+        'This route is assigned to a bus. Change/unassign the bus route before deleting.',
+      );
+      return;
+    }
+    final yes = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete route?'),
+        content: Text(
+          'Delete ${(route['routeName'] ?? 'this route').toString()}? This cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (yes != true) return;
+    try {
+      await FirebaseFirestore.instance
+          .collection('routes')
+          .doc(routeId)
+          .delete();
+      if (mounted) _message('Route deleted.');
+    } on FirebaseException catch (e) {
+      if (mounted)
+        _message('Delete failed (${e.code}). Check Firestore rules.');
+    }
+  }
 
   Widget _busesPage() => StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
     stream: FirebaseFirestore.instance.collection('buses').snapshots(),
@@ -2948,7 +3227,7 @@ class BusSectionPage extends StatelessWidget {
       case 'B':
         final driverId = (bus['driverId'] ?? '').toString();
         if (driverId.isEmpty) {
-          return _details([_line('Driver Assignment', 'Not Assigned')]);
+          return _driverAssignmentContent(context, bus, null, {});
         }
         return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
           stream: FirebaseFirestore.instance
@@ -2957,41 +3236,14 @@ class BusSectionPage extends StatelessWidget {
               .snapshots(),
           builder: (context, snap) {
             final driver = snap.data?.data() ?? {};
-            return _details([
-              _line('Driver Name', driver['name'] ?? bus['driverName']),
-              _line('Driver Employee ID', driver['employeeId']),
-              _line('Driver Mobile Number', driver['mobile']),
-              _line('Driver UID', driverId),
-              _line(
-                'Driver Approval Status',
-                driver.isEmpty
-                    ? 'Driver profile not found'
-                    : (driver['isActive'] == true
-                          ? 'Approved / Active'
-                          : 'Inactive'),
-              ),
-            ]);
+            return _driverAssignmentContent(context, bus, driverId, driver);
           },
         );
       case 'C':
         final routeId = (bus['routeId'] ?? '').toString();
         final routeName = (bus['routeName'] ?? '').toString();
         if (routeId.isEmpty) {
-          return _details([
-            _line(
-              'Assigned Route',
-              routeName.isEmpty ? 'Not Assigned' : routeName,
-            ),
-            _line('Route Name', routeName),
-            _line('Starting Point', bus['startingPoint']),
-            _line('Destination', bus['destination']),
-            _line(
-              'All Bus Stops',
-              bus['stops'] is List
-                  ? (bus['stops'] as List).join(' → ')
-                  : bus['stops'],
-            ),
-          ]);
+          return _routeAssignmentContent(context, bus, null, {});
         }
         return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
           stream: FirebaseFirestore.instance
@@ -3000,25 +3252,7 @@ class BusSectionPage extends StatelessWidget {
               .snapshots(),
           builder: (context, snap) {
             final route = snap.data?.data() ?? {};
-            final stops = route['stops'] ?? bus['stops'];
-            return _details([
-              _line('Assigned Route', routeId),
-              _line(
-                'Route Name',
-                route['routeName'] ?? route['name'] ?? routeName,
-              ),
-              _line(
-                'Starting Point',
-                route['startingPoint'] ??
-                    route['startPoint'] ??
-                    bus['startingPoint'],
-              ),
-              _line(
-                'Destination',
-                route['destination'] ?? route['endPoint'] ?? bus['destination'],
-              ),
-              _line('All Bus Stops', stops is List ? stops.join(' → ') : stops),
-            ]);
+            return _routeAssignmentContent(context, bus, routeId, route);
           },
         );
       case 'D':
@@ -3055,6 +3289,249 @@ class BusSectionPage extends StatelessWidget {
         return _management(context, bus);
       default:
         return const SizedBox.shrink();
+    }
+  }
+
+  Widget _routeAssignmentContent(
+    BuildContext context,
+    Map<String, dynamic> bus,
+    String? routeId,
+    Map<String, dynamic> route,
+  ) {
+    final hasRoute = routeId != null && routeId.isNotEmpty;
+    final routeName =
+        route['routeName'] ??
+        route['name'] ??
+        bus['routeName'] ??
+        'Not Assigned';
+    final start =
+        route['startingPoint'] ??
+        route['startPoint'] ??
+        bus['startingPoint'] ??
+        'Not Available';
+    final destination =
+        route['destination'] ??
+        route['endPoint'] ??
+        bus['destination'] ??
+        'Not Available';
+    final stops = route['stops'] ?? bus['stops'];
+    final stopsText = stops is List
+        ? stops.map((e) => e.toString()).join(' → ')
+        : (stops?.toString().isNotEmpty == true
+              ? stops.toString()
+              : 'Not Available');
+
+    return _details([
+      _line('Assigned Route', hasRoute ? routeName : 'Not Assigned'),
+      _line('Route ID', hasRoute ? routeId : 'Not Assigned'),
+      _line('Starting Point', start),
+      _line('Destination', destination),
+      _line('All Bus Stops', stopsText),
+      const SizedBox(height: 18),
+      Wrap(
+        spacing: 10,
+        runSpacing: 10,
+        children: [
+          FilledButton.icon(
+            style: FilledButton.styleFrom(backgroundColor: _orange),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => AssignRoutePage(
+                  busId: busId,
+                  busNumber: (bus['busNumber'] ?? 'Bus').toString(),
+                  currentRouteId: routeId,
+                ),
+              ),
+            ),
+            icon: const Icon(Icons.alt_route),
+            label: Text(hasRoute ? 'Change Route' : 'Assign Route'),
+          ),
+          if (hasRoute)
+            OutlinedButton.icon(
+              onPressed: () => _confirmUnassignRoute(context, bus),
+              icon: const Icon(Icons.link_off),
+              label: const Text('Unassign Route'),
+            ),
+        ],
+      ),
+    ]);
+  }
+
+  Future<void> _confirmUnassignRoute(
+    BuildContext context,
+    Map<String, dynamic> bus,
+  ) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Unassign Route?'),
+        content: Text(
+          'Remove the route assigned to ${(bus['busNumber'] ?? 'this bus')}?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(backgroundColor: _orange),
+            child: const Text('Unassign'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+
+    try {
+      final db = FirebaseFirestore.instance;
+      final batch = db.batch();
+      batch.update(db.collection('buses').doc(busId), {
+        'routeId': FieldValue.delete(),
+        'routeName': FieldValue.delete(),
+        'startingPoint': FieldValue.delete(),
+        'destination': FieldValue.delete(),
+        'stops': FieldValue.delete(),
+        'routeAssignedAt': FieldValue.delete(),
+        'routeAssignedBy': FieldValue.delete(),
+        'updatedAt': FieldValue.serverTimestamp(),
+        'updatedBy': FirebaseAuth.instance.currentUser?.uid,
+      });
+      batch.set(db.collection('bus_history').doc(), {
+        'busId': busId,
+        'action': 'Route Unassigned',
+        'description': 'Route removed from ${(bus['busNumber'] ?? 'bus')}.',
+        'changedBy': FirebaseAuth.instance.currentUser?.uid,
+        'timestamp': FieldValue.serverTimestamp(),
+      });
+      await batch.commit();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Route unassigned successfully.')),
+        );
+      }
+    } on FirebaseException catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not unassign route (${e.code}).')),
+        );
+      }
+    }
+  }
+
+  Widget _driverAssignmentContent(
+    BuildContext context,
+    Map<String, dynamic> bus,
+    String? driverId,
+    Map<String, dynamic> driver,
+  ) {
+    final hasDriver = driverId != null && driverId.isNotEmpty;
+    final driverName = driver['name'] ?? bus['driverName'] ?? 'Not Assigned';
+    return _details([
+      _line('Driver Name', driverName),
+      _line(
+        'Driver Employee ID',
+        driver['employeeId'] ?? bus['driverEmployeeId'],
+      ),
+      _line('Driver Mobile Number', driver['mobile'] ?? bus['driverMobile']),
+      _line('Driver UID', hasDriver ? driverId : 'Not Assigned'),
+      _line(
+        'Driver Approval Status',
+        !hasDriver
+            ? 'Not Assigned'
+            : driver.isEmpty
+            ? 'Driver profile not found'
+            : (driver['isActive'] == true ? 'Approved / Active' : 'Inactive'),
+      ),
+      const SizedBox(height: 18),
+      Wrap(
+        spacing: 10,
+        runSpacing: 10,
+        children: [
+          FilledButton.icon(
+            style: FilledButton.styleFrom(backgroundColor: _orange),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => AssignDriverPage(
+                  busId: busId,
+                  busNumber: (bus['busNumber'] ?? 'Bus').toString(),
+                  currentDriverId: driverId,
+                ),
+              ),
+            ),
+            icon: const Icon(Icons.person_add_alt_1),
+            label: Text(hasDriver ? 'Change Driver' : 'Assign Driver'),
+          ),
+          if (hasDriver)
+            OutlinedButton.icon(
+              onPressed: () => _confirmUnassignDriver(context, bus),
+              icon: const Icon(Icons.person_remove_alt_1),
+              label: const Text('Unassign Driver'),
+            ),
+        ],
+      ),
+    ]);
+  }
+
+  Future<void> _confirmUnassignDriver(
+    BuildContext context,
+    Map<String, dynamic> bus,
+  ) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Unassign Driver?'),
+        content: Text(
+          'Remove the driver assigned to ${(bus['busNumber'] ?? 'this bus')}?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(backgroundColor: _orange),
+            child: const Text('Unassign'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+
+    try {
+      final db = FirebaseFirestore.instance;
+      final busRef = db.collection('buses').doc(busId);
+      final batch = db.batch();
+      batch.update(busRef, {
+        'driverId': FieldValue.delete(),
+        'driverName': FieldValue.delete(),
+        'driverEmployeeId': FieldValue.delete(),
+        'driverMobile': FieldValue.delete(),
+        'driverAssignedAt': FieldValue.delete(),
+        'driverAssignedBy': FieldValue.delete(),
+        'updatedAt': FieldValue.serverTimestamp(),
+        'updatedBy': FirebaseAuth.instance.currentUser?.uid,
+      });
+      batch.set(db.collection('bus_history').doc(), {
+        'busId': busId,
+        'action': 'Driver Unassigned',
+        'description': 'Driver removed from ${(bus['busNumber'] ?? 'bus')}.',
+        'changedBy': FirebaseAuth.instance.currentUser?.uid,
+        'timestamp': FieldValue.serverTimestamp(),
+      });
+      await batch.commit();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Driver unassigned successfully.')),
+        );
+      }
+    } on FirebaseException catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not unassign driver (${e.code}).')),
+        );
+      }
     }
   }
 
@@ -3392,6 +3869,659 @@ class BusMaintenanceHistoryPage extends StatelessWidget {
   }
 }
 
+class AssignRoutePage extends StatefulWidget {
+  final String busId;
+  final String busNumber;
+  final String? currentRouteId;
+
+  const AssignRoutePage({
+    super.key,
+    required this.busId,
+    required this.busNumber,
+    this.currentRouteId,
+  });
+
+  @override
+  State<AssignRoutePage> createState() => _AssignRoutePageState();
+}
+
+class _AssignRoutePageState extends State<AssignRoutePage> {
+  static const Color _orange = Color(0xFFFF7900);
+  static const Color _dark = Color(0xFF172033);
+  static const Color _muted = Color(0xFF788195);
+  static const Color _line = Color(0xFFE8ECF2);
+
+  String _search = '';
+  String? _savingRouteId;
+  bool _saving = false;
+
+  String _routeName(Map<String, dynamic> route) =>
+      (route['routeName'] ?? route['name'] ?? route['title'] ?? 'Unnamed Route')
+          .toString();
+
+  String _stopsText(dynamic stops) {
+    if (stops is List) return stops.map((e) => e.toString()).join(' → ');
+    if (stops == null || stops.toString().trim().isEmpty)
+      return 'Stops not set';
+    return stops.toString();
+  }
+
+  Future<void> _assignRoute(
+    QueryDocumentSnapshot<Map<String, dynamic>> routeDoc,
+  ) async {
+    if (_saving) return;
+    final route = routeDoc.data();
+    final name = _routeName(route).trim();
+    if (name == 'Unnamed Route' || name.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('This route has no name.')));
+      return;
+    }
+
+    setState(() {
+      _saving = true;
+      _savingRouteId = routeDoc.id;
+    });
+
+    try {
+      final db = FirebaseFirestore.instance;
+      final start = route['startingPoint'] ?? route['startPoint'] ?? '';
+      final destination = route['destination'] ?? route['endPoint'] ?? '';
+      final stops = route['stops'];
+      final batch = db.batch();
+      batch.update(db.collection('buses').doc(widget.busId), {
+        'routeId': routeDoc.id,
+        'routeName': name,
+        'startingPoint': start,
+        'destination': destination,
+        if (stops != null) 'stops': stops,
+        'routeAssignedAt': FieldValue.serverTimestamp(),
+        'routeAssignedBy': FirebaseAuth.instance.currentUser?.uid,
+        'updatedAt': FieldValue.serverTimestamp(),
+        'updatedBy': FirebaseAuth.instance.currentUser?.uid,
+      });
+      batch.set(db.collection('bus_history').doc(), {
+        'busId': widget.busId,
+        'action': 'Route Assigned',
+        'description': '$name assigned to ${widget.busNumber}.',
+        'routeId': routeDoc.id,
+        'routeName': name,
+        'changedBy': FirebaseAuth.instance.currentUser?.uid,
+        'timestamp': FieldValue.serverTimestamp(),
+      });
+      await batch.commit();
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$name assigned to ${widget.busNumber}.')),
+      );
+      Navigator.of(context).pop();
+    } on FirebaseException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Route assignment failed (${e.code}). Check Firestore rules.',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Route assignment failed: $e')));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _saving = false;
+          _savingRouteId = null;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF5F7FB),
+      appBar: AppBar(
+        backgroundColor: Colors.white,
+        foregroundColor: _dark,
+        elevation: 0,
+        title: Text('Assign Route • ${widget.busNumber}'),
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 18, 20, 12),
+            child: TextField(
+              onChanged: (value) =>
+                  setState(() => _search = value.trim().toLowerCase()),
+              decoration: InputDecoration(
+                hintText: 'Search route by name, start or destination',
+                prefixIcon: const Icon(Icons.search),
+                filled: true,
+                fillColor: Colors.white,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(13),
+                  borderSide: const BorderSide(color: _line),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(13),
+                  borderSide: const BorderSide(color: _line),
+                ),
+              ),
+            ),
+          ),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(20, 0, 20, 12),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Select an existing route from Firestore. Create routes from Route Management first.',
+                style: TextStyle(color: _muted, fontSize: 12),
+              ),
+            ),
+          ),
+          Expanded(
+            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: FirebaseFirestore.instance
+                  .collection('routes')
+                  .snapshots(),
+              builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Text(
+                        'Could not load routes: ${snapshot.error}',
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  );
+                }
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+
+                final routes =
+                    (snapshot.data?.docs ?? []).where((doc) {
+                      final route = doc.data();
+                      final searchable = [
+                        _routeName(route),
+                        route['startingPoint'],
+                        route['startPoint'],
+                        route['destination'],
+                        route['endPoint'],
+                        _stopsText(route['stops']),
+                      ].join(' ').toLowerCase();
+                      return searchable.contains(_search);
+                    }).toList()..sort(
+                      (a, b) => _routeName(a.data()).toLowerCase().compareTo(
+                        _routeName(b.data()).toLowerCase(),
+                      ),
+                    );
+
+                if (routes.isEmpty) {
+                  return const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.alt_route, size: 48, color: _muted),
+                          SizedBox(height: 10),
+                          Text(
+                            'No routes found in Firestore.',
+                            style: TextStyle(
+                              color: _dark,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          SizedBox(height: 5),
+                          Text(
+                            'Add a route in Route Management, then return here.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: _muted, fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                }
+
+                return ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
+                  itemCount: routes.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 10),
+                  itemBuilder: (context, index) {
+                    final doc = routes[index];
+                    final route = doc.data();
+                    final isCurrent = doc.id == widget.currentRouteId;
+                    final name = _routeName(route);
+                    final start =
+                        route['startingPoint'] ??
+                        route['startPoint'] ??
+                        'Start not set';
+                    final end =
+                        route['destination'] ??
+                        route['endPoint'] ??
+                        'Destination not set';
+                    return Material(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(14),
+                      child: Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: isCurrent ? _orange : _line,
+                            width: isCurrent ? 1.5 : 1,
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            const CircleAvatar(
+                              backgroundColor: Color(0xFFFFF0E3),
+                              child: Icon(Icons.alt_route, color: _orange),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    name,
+                                    style: const TextStyle(
+                                      color: _dark,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    '$start → $end',
+                                    style: const TextStyle(
+                                      color: _muted,
+                                      fontSize: 11,
+                                    ),
+                                  ),
+                                  Text(
+                                    'Stops: ${_stopsText(route['stops'])}',
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: _muted,
+                                      fontSize: 11,
+                                    ),
+                                  ),
+                                  if (isCurrent)
+                                    const Padding(
+                                      padding: EdgeInsets.only(top: 5),
+                                      child: Text(
+                                        'Currently assigned to this bus',
+                                        style: TextStyle(
+                                          color: Color(0xFF16865C),
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            FilledButton(
+                              style: FilledButton.styleFrom(
+                                backgroundColor: _orange,
+                              ),
+                              onPressed: _saving || isCurrent
+                                  ? null
+                                  : () => _assignRoute(doc),
+                              child: _savingRouteId == doc.id
+                                  ? const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: Colors.white,
+                                      ),
+                                    )
+                                  : Text(isCurrent ? 'Assigned' : 'Assign'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class AssignDriverPage extends StatefulWidget {
+  final String busId;
+  final String busNumber;
+  final String? currentDriverId;
+
+  const AssignDriverPage({
+    super.key,
+    required this.busId,
+    required this.busNumber,
+    this.currentDriverId,
+  });
+
+  @override
+  State<AssignDriverPage> createState() => _AssignDriverPageState();
+}
+
+class _AssignDriverPageState extends State<AssignDriverPage> {
+  static const Color _orange = Color(0xFFFF7900);
+  static const Color _dark = Color(0xFF172033);
+  static const Color _muted = Color(0xFF788195);
+  static const Color _line = Color(0xFFE8ECF2);
+
+  String _search = '';
+  String? _savingDriverId;
+  bool _saving = false;
+
+  Future<void> _assignDriver(
+    QueryDocumentSnapshot<Map<String, dynamic>> driverDoc,
+  ) async {
+    if (_saving) return;
+    final driver = driverDoc.data();
+    final driverId = driverDoc.id;
+    final driverName = (driver['name'] ?? '').toString().trim();
+
+    if (driverName.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('This driver profile has no name.')),
+      );
+      return;
+    }
+
+    setState(() {
+      _saving = true;
+      _savingDriverId = driverId;
+    });
+
+    try {
+      final db = FirebaseFirestore.instance;
+      final batch = db.batch();
+      batch.update(db.collection('buses').doc(widget.busId), {
+        'driverId': driverId,
+        'driverName': driverName,
+        'driverEmployeeId': (driver['employeeId'] ?? '').toString(),
+        'driverMobile': (driver['mobile'] ?? '').toString(),
+        'driverAssignedAt': FieldValue.serverTimestamp(),
+        'driverAssignedBy': FirebaseAuth.instance.currentUser?.uid,
+        'updatedAt': FieldValue.serverTimestamp(),
+        'updatedBy': FirebaseAuth.instance.currentUser?.uid,
+      });
+      batch.set(db.collection('bus_history').doc(), {
+        'busId': widget.busId,
+        'action': 'Driver Assigned',
+        'description': '$driverName assigned to ${widget.busNumber}.',
+        'driverId': driverId,
+        'driverName': driverName,
+        'changedBy': FirebaseAuth.instance.currentUser?.uid,
+        'timestamp': FieldValue.serverTimestamp(),
+      });
+      await batch.commit();
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$driverName assigned to ${widget.busNumber}.')),
+      );
+      Navigator.of(context).pop();
+    } on FirebaseException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Driver assignment failed (${e.code}). Check Firestore rules.',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Driver assignment failed: $e')));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _saving = false;
+          _savingDriverId = null;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF5F7FB),
+      appBar: AppBar(
+        backgroundColor: Colors.white,
+        foregroundColor: _dark,
+        elevation: 0,
+        title: Text('Assign Driver • ${widget.busNumber}'),
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 18, 20, 12),
+            child: TextField(
+              onChanged: (value) =>
+                  setState(() => _search = value.trim().toLowerCase()),
+              decoration: InputDecoration(
+                hintText: 'Search driver by name, email or employee ID',
+                prefixIcon: const Icon(Icons.search),
+                filled: true,
+                fillColor: Colors.white,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(13),
+                  borderSide: const BorderSide(color: _line),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(13),
+                  borderSide: const BorderSide(color: _line),
+                ),
+              ),
+            ),
+          ),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(20, 0, 20, 12),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Only approved and active driver accounts are listed.',
+                style: TextStyle(color: _muted, fontSize: 12),
+              ),
+            ),
+          ),
+          Expanded(
+            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: FirebaseFirestore.instance
+                  .collection('users')
+                  .where('role', isEqualTo: 'driver')
+                  .where('isActive', isEqualTo: true)
+                  .snapshots(),
+              builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Text(
+                        'Could not load approved drivers: ${snapshot.error}',
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  );
+                }
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+
+                final drivers =
+                    (snapshot.data?.docs ?? []).where((doc) {
+                      final d = doc.data();
+                      final searchable = [
+                        d['name'],
+                        d['email'],
+                        d['employeeId'],
+                        d['mobile'],
+                      ].join(' ').toLowerCase();
+                      return searchable.contains(_search);
+                    }).toList()..sort(
+                      (a, b) => (a.data()['name'] ?? '')
+                          .toString()
+                          .toLowerCase()
+                          .compareTo(
+                            (b.data()['name'] ?? '').toString().toLowerCase(),
+                          ),
+                    );
+
+                if (drivers.isEmpty) {
+                  return const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.person_search_outlined,
+                            size: 48,
+                            color: _muted,
+                          ),
+                          SizedBox(height: 10),
+                          Text(
+                            'No approved active drivers found.',
+                            style: TextStyle(
+                              color: _dark,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          SizedBox(height: 5),
+                          Text(
+                            'Approve a driver request first, then return here.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: _muted, fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                }
+
+                return ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
+                  itemCount: drivers.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 10),
+                  itemBuilder: (context, index) {
+                    final doc = drivers[index];
+                    final d = doc.data();
+                    final isCurrent = doc.id == widget.currentDriverId;
+                    return Material(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(14),
+                      child: Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: isCurrent ? _orange : _line,
+                            width: isCurrent ? 1.5 : 1,
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            const CircleAvatar(
+                              backgroundColor: Color(0xFFFFF0E3),
+                              child: Icon(Icons.person, color: _orange),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    (d['name'] ?? 'Unnamed Driver').toString(),
+                                    style: const TextStyle(
+                                      color: _dark,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 3),
+                                  Text(
+                                    'Employee ID: ${d['employeeId'] ?? 'Not set'}',
+                                    style: const TextStyle(
+                                      color: _muted,
+                                      fontSize: 11,
+                                    ),
+                                  ),
+                                  Text(
+                                    '${d['mobile'] ?? 'Mobile not set'} • ${d['email'] ?? ''}',
+                                    style: const TextStyle(
+                                      color: _muted,
+                                      fontSize: 11,
+                                    ),
+                                  ),
+                                  if (isCurrent)
+                                    const Padding(
+                                      padding: EdgeInsets.only(top: 5),
+                                      child: Text(
+                                        'Currently assigned to this bus',
+                                        style: TextStyle(
+                                          color: Color(0xFF16865C),
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            FilledButton(
+                              style: FilledButton.styleFrom(
+                                backgroundColor: _orange,
+                              ),
+                              onPressed: _saving || isCurrent
+                                  ? null
+                                  : () => _assignDriver(doc),
+                              child: _savingDriverId == doc.id
+                                  ? const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: Colors.white,
+                                      ),
+                                    )
+                                  : Text(isCurrent ? 'Assigned' : 'Assign'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class BusCategoryListPage extends StatelessWidget {
   final String category;
   const BusCategoryListPage({super.key, required this.category});
@@ -3679,4 +4809,842 @@ class _MapPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+/// Admin route builder using free OpenStreetMap-based public services.
+/// Public endpoints have fair-use limits; this is suitable for a prototype.
+class AdminRouteBuilderPage extends StatefulWidget {
+  final String? routeId;
+  final Map<String, dynamic>? initialRoute;
+  const AdminRouteBuilderPage({super.key, this.routeId, this.initialRoute});
+  @override
+  State<AdminRouteBuilderPage> createState() => _AdminRouteBuilderPageState();
+}
+
+class _AdminRouteBuilderPageState extends State<AdminRouteBuilderPage> {
+  static const _orange = Color(0xFFFF7900);
+  static const _dark = Color(0xFF172033);
+  static const String _campusName = 'Yashoda Technical Campus';
+  static const String _campusAddress =
+      'Yashoda Technical Campus, S. No. 242/1, NH-4, Wadhe, Satara, Maharashtra 415011, India';
+  // Exact campus location supplied by the user (Yashoda Technical Campus).
+  static const LatLng _campusLocation = LatLng(
+    17.72163963890557,
+    74.02065121985194,
+  );
+  final _start = TextEditingController();
+  final _end = TextEditingController();
+  final _name = TextEditingController();
+  final _map = MapController();
+  final List<LatLng> _geometry = [];
+  final List<_SuggestedRouteStop> _suggestions = [];
+  LatLng? _startPoint;
+  LatLng? _endPoint;
+  bool _loading = false;
+  bool _saving = false;
+  bool _addingStopOnMap = false;
+  String? _error;
+  double? _distanceKm;
+  double? _durationMin;
+
+  @override
+  void initState() {
+    super.initState();
+    final d = widget.initialRoute ?? {};
+    _start.text = (d['startingPoint'] ?? '').toString();
+    _end.text = _campusName;
+    _name.text = (d['routeName'] ?? '').toString();
+    final coords = d['geometry'];
+    if (coords is List) {
+      for (final item in coords) {
+        if (item is Map && item['lat'] is num && item['lng'] is num) {
+          _geometry.add(
+            LatLng(
+              (item['lat'] as num).toDouble(),
+              (item['lng'] as num).toDouble(),
+            ),
+          );
+        }
+      }
+    }
+    final rawStops = d['suggestedStops'] ?? d['stops'];
+    if (rawStops is List) {
+      for (final item in rawStops) {
+        if (item is Map &&
+            item['name'] != null &&
+            item['lat'] is num &&
+            item['lng'] is num) {
+          _suggestions.add(
+            _SuggestedRouteStop(
+              item['name'].toString(),
+              LatLng(
+                (item['lat'] as num).toDouble(),
+                (item['lng'] as num).toDouble(),
+              ),
+              selected: item['selected'] != false,
+            ),
+          );
+        } else if (item is String) {
+          _suggestions.add(
+            _SuggestedRouteStop(item, const LatLng(0, 0), selected: true),
+          );
+        }
+      }
+    }
+    if (_geometry.isNotEmpty) {
+      _startPoint = _geometry.first;
+      _endPoint = _geometry.last;
+    }
+  }
+
+  @override
+  void dispose() {
+    _start.dispose();
+    _end.dispose();
+    _name.dispose();
+    _map.dispose();
+    super.dispose();
+  }
+
+  Future<LatLng> _geocode(String query) async {
+    final normalized = query.toLowerCase().contains('maharashtra')
+        ? query
+        : '$query, Maharashtra, India';
+    final uri = Uri.https('nominatim.openstreetmap.org', '/search', {
+      'q': normalized,
+      'format': 'jsonv2',
+      'limit': '5',
+      'countrycodes': 'in',
+      'addressdetails': '1',
+    });
+    final response = await http
+        .get(
+          uri,
+          headers: {'User-Agent': 'CampusBusAI360/1.0 (college project)'},
+        )
+        .timeout(const Duration(seconds: 20));
+    if (response.statusCode != 200) {
+      throw Exception(
+        'Place search failed (${response.statusCode}). Try again.',
+      );
+    }
+    final data = jsonDecode(response.body) as List;
+    if (data.isEmpty) throw Exception('Starting place not found: $query');
+    // Prefer a result inside Maharashtra; countrycodes=in prevents foreign matches.
+    final result = data.first as Map<String, dynamic>;
+    return LatLng(
+      double.parse(result['lat'].toString()),
+      double.parse(result['lon'].toString()),
+    );
+  }
+
+  Future<void> _buildRoute() async {
+    if (_start.text.trim().isEmpty) {
+      setState(() => _error = 'Enter the starting point.');
+      return;
+    }
+    setState(() {
+      _loading = true;
+      _error = null;
+      _suggestions.clear();
+      _geometry.clear();
+      _distanceKm = null;
+      _durationMin = null;
+    });
+    try {
+      // Only the origin is geocoded from user input. Destination is always the campus pin.
+      final start = await _geocode(_start.text.trim());
+      final end = _campusLocation;
+      final routeUri = Uri.parse(
+        'https://router.project-osrm.org/route/v1/driving/${start.longitude},${start.latitude};${end.longitude},${end.latitude}?overview=full&geometries=geojson&steps=true',
+      );
+      final routeResponse = await http
+          .get(routeUri)
+          .timeout(const Duration(seconds: 35));
+      if (routeResponse.statusCode != 200) {
+        throw Exception(
+          'Road route service unavailable (${routeResponse.statusCode}). Try again later.',
+        );
+      }
+      final routeJson = jsonDecode(routeResponse.body) as Map<String, dynamic>;
+      if (routeJson['code'] != 'Ok' || (routeJson['routes'] as List).isEmpty) {
+        throw Exception(
+          'No drivable road route found from this starting point to Yashoda Technical Campus.',
+        );
+      }
+      final route = (routeJson['routes'] as List).first as Map<String, dynamic>;
+      final coords = (route['geometry']['coordinates'] as List).cast<List>();
+      final points = coords
+          .map(
+            (c) => LatLng((c[1] as num).toDouble(), (c[0] as num).toDouble()),
+          )
+          .toList();
+      final distance = (route['distance'] as num).toDouble() / 1000;
+      final duration = (route['duration'] as num).toDouble() / 60;
+      if (points.length < 2) throw Exception('Route geometry was empty.');
+      if (!mounted) return;
+      _name.text = '${_start.text.trim()} - $_campusName';
+      _end.text = _campusName;
+      setState(() {
+        _startPoint = start;
+        _endPoint = end;
+        _geometry.addAll(points);
+        _distanceKm = distance;
+        _durationMin = duration;
+      });
+      _map.fitCamera(
+        CameraFit.coordinates(
+          coordinates: points,
+          padding: const EdgeInsets.all(55),
+        ),
+      );
+      // Stops are added manually by the admin directly on the generated route map.
+    } catch (e) {
+      if (mounted)
+        setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _loadSuggestedStops(List<LatLng> routePoints) async {
+    if (routePoints.length < 2) return;
+
+    // Fewer route samples and one compact query reduce Overpass load.
+    final sampled = <LatLng>[];
+    const sampleCount = 5;
+    for (var i = 0; i < sampleCount; i++) {
+      final index = ((routePoints.length - 1) * i / (sampleCount - 1)).round();
+      sampled.add(routePoints[index]);
+    }
+
+    final clauses = sampled.map((p) {
+      final lat = p.latitude.toStringAsFixed(6);
+      final lon = p.longitude.toStringAsFixed(6);
+      return 'nwr(around:1700,$lat,$lon)["place"~"city|town|village|suburb|hamlet"];'
+          'nwr(around:850,$lat,$lon)["highway"="bus_stop"];'
+          'nwr(around:850,$lat,$lon)["public_transport"="platform"];';
+    }).join();
+    final query = '[out:json][timeout:18];($clauses);out center tags;';
+
+    // Public Overpass instances sometimes become busy. Retry a second mirror.
+    const endpoints = [
+      'https://overpass.kumi.systems/api/interpreter',
+      'https://overpass-api.de/api/interpreter',
+    ];
+
+    Object? lastError;
+    for (final endpoint in endpoints) {
+      try {
+        final response = await http
+            .post(
+              Uri.parse(endpoint),
+              headers: {
+                'User-Agent': 'CampusBusAI360/1.0 (college project)',
+                'Content-Type': 'application/x-www-form-urlencoded',
+              },
+              body: {'data': query},
+            )
+            .timeout(const Duration(seconds: 22));
+
+        if (response.statusCode != 200) {
+          lastError = 'HTTP ${response.statusCode}';
+          continue;
+        }
+
+        final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+        final elements = (decoded['elements'] as List?) ?? const [];
+        final candidates = <_SuggestedRouteStop>[];
+        final seenNames = <String>{};
+
+        for (final raw in elements) {
+          if (raw is! Map<String, dynamic>) continue;
+          final tags = (raw['tags'] as Map?) ?? const {};
+          final center = raw['center'] as Map?;
+          final latValue = raw['lat'] ?? center?['lat'];
+          final lonValue = raw['lon'] ?? center?['lon'];
+          if (latValue is! num || lonValue is! num) continue;
+
+          final point = LatLng(latValue.toDouble(), lonValue.toDouble());
+          final nearestKm = routePoints.fold<double>(double.infinity, (
+            best,
+            p,
+          ) {
+            final distance = const Distance().as(
+              LengthUnit.Kilometer,
+              point,
+              p,
+            );
+            return distance < best ? distance : best;
+          });
+          if (nearestKm > 2.0) continue;
+
+          final name =
+              (tags['name'] ?? tags['name:en'] ?? tags['name:mr'] ?? '')
+                  .toString()
+                  .trim();
+          if (name.isEmpty) continue;
+
+          final key = name.toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+          if (!seenNames.add(key)) continue;
+          candidates.add(_SuggestedRouteStop(name, point, selected: true));
+        }
+
+        candidates.sort(
+          (a, b) => _routeProgress(
+            a.point,
+            routePoints,
+          ).compareTo(_routeProgress(b.point, routePoints)),
+        );
+
+        if (mounted) {
+          setState(() {
+            _suggestions
+              ..clear()
+              ..addAll(candidates.take(30));
+            _error = candidates.isEmpty
+                ? 'Route ready. No named mapped towns or bus stops were found near this route. You can still save it.'
+                : null;
+          });
+        }
+        return;
+      } catch (e) {
+        lastError = e;
+      }
+    }
+
+    if (mounted) {
+      setState(() {
+        _error =
+            'Route ready, but stop suggestions could not load from the free map service. Please retry in a moment. (${lastError ?? 'network error'})';
+      });
+    }
+  }
+
+  LatLng _nearestRoutePoint(LatLng tappedPoint) {
+    var nearest = _geometry.first;
+    var best = double.infinity;
+    for (final point in _geometry) {
+      final distance = const Distance().as(
+        LengthUnit.Meter,
+        tappedPoint,
+        point,
+      );
+      if (distance < best) {
+        best = distance;
+        nearest = point;
+      }
+    }
+    return nearest;
+  }
+
+  Future<void> _handleMapTap(LatLng tappedPoint) async {
+    if (!_addingStopOnMap || _geometry.length < 2) return;
+
+    final snappedPoint = _nearestRoutePoint(tappedPoint);
+    final distance = const Distance().as(
+      LengthUnit.Kilometer,
+      tappedPoint,
+      snappedPoint,
+    );
+    if (distance > 1.2) {
+      setState(
+        () => _error =
+            'Please click closer to the blue route line to add a stop.',
+      );
+      return;
+    }
+
+    final nameController = TextEditingController(
+      text: 'Stop ${_suggestions.length + 1}',
+    );
+    final name = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Add route stop'),
+        content: TextField(
+          controller: nameController,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Stop name',
+            hintText: 'e.g. Wai Bus Stand',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.pop(dialogContext, nameController.text.trim()),
+            child: const Text('Add Stop'),
+          ),
+        ],
+      ),
+    );
+    nameController.dispose();
+
+    if (!mounted || name == null || name.trim().isEmpty) return;
+    final duplicate = _suggestions.any(
+      (s) => s.name.toLowerCase() == name.trim().toLowerCase(),
+    );
+    if (duplicate) {
+      setState(() => _error = 'A stop with this name already exists.');
+      return;
+    }
+
+    setState(() {
+      _suggestions.add(
+        _SuggestedRouteStop(name.trim(), snappedPoint, selected: true),
+      );
+      _suggestions.sort(
+        (a, b) => _routeProgress(
+          a.point,
+          _geometry,
+        ).compareTo(_routeProgress(b.point, _geometry)),
+      );
+      _addingStopOnMap = false;
+      _error = null;
+    });
+  }
+
+  void _removeStop(_SuggestedRouteStop stop) {
+    setState(() => _suggestions.remove(stop));
+  }
+
+  int _routeProgress(LatLng p, List<LatLng> line) {
+    var best = double.infinity;
+    var index = 0;
+    for (var i = 0; i < line.length; i++) {
+      final d = const Distance().as(LengthUnit.Meter, p, line[i]);
+      if (d < best) {
+        best = d;
+        index = i;
+      }
+    }
+    return index;
+  }
+
+  Future<void> _saveRoute() async {
+    if (_geometry.length < 2 || _startPoint == null || _endPoint == null) {
+      setState(() => _error = 'First generate the route on the map.');
+      return;
+    }
+    _name.text = '${_start.text.trim()} - $_campusName';
+    final currentUser = FirebaseAuth.instance.currentUser;
+    if (currentUser == null) {
+      setState(
+        () => _error = 'Please log in as Admin before saving this route.',
+      );
+      return;
+    }
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+    try {
+      final selected = _suggestions
+          .where((s) => s.selected && s.point.latitude != 0)
+          .toList();
+      final data = <String, dynamic>{
+        'routeName': _name.text.trim(),
+        'startingPoint': _start.text.trim(),
+        'destination': _campusName,
+        'stops': [
+          _start.text.trim(),
+          ...selected.map((s) => s.name),
+          _campusName,
+        ],
+        'suggestedStops': selected
+            .map(
+              (s) => {
+                'name': s.name,
+                'lat': s.point.latitude,
+                'lng': s.point.longitude,
+                'selected': true,
+              },
+            )
+            .toList(),
+        'geometry': _geometry
+            .map((p) => {'lat': p.latitude, 'lng': p.longitude})
+            .toList(),
+        'startLocation': {
+          'lat': _startPoint!.latitude,
+          'lng': _startPoint!.longitude,
+        },
+        'endLocation': {
+          'lat': _endPoint!.latitude,
+          'lng': _endPoint!.longitude,
+        },
+        'distanceKm': _distanceKm,
+        'estimatedDurationMinutes': _durationMin,
+        'isActive': true,
+        'updatedAt': FieldValue.serverTimestamp(),
+        'updatedBy': currentUser.uid,
+      };
+      final collection = FirebaseFirestore.instance.collection('routes');
+      if (widget.routeId == null) {
+        data['createdAt'] = FieldValue.serverTimestamp();
+        data['createdBy'] = currentUser.uid;
+        // Create a known document reference first, then write the complete route.
+        final newRouteRef = collection.doc();
+        await newRouteRef.set(data);
+      } else {
+        data['createdAt'] =
+            (widget.initialRoute ?? {})['createdAt'] ??
+            FieldValue.serverTimestamp();
+        data['createdBy'] =
+            (widget.initialRoute ?? {})['createdBy'] ?? currentUser.uid;
+        await collection.doc(widget.routeId).set(data, SetOptions(merge: true));
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            widget.routeId == null
+                ? 'Route saved to Firestore.'
+                : 'Route updated.',
+          ),
+        ),
+      );
+      Navigator.pop(context);
+    } on FirebaseException catch (e) {
+      if (mounted) {
+        setState(() {
+          _error =
+              'Firestore save failed: ${e.code}. ${e.message ?? 'No additional details returned.'}';
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: Colors.red.shade700,
+            duration: const Duration(seconds: 8),
+            content: Text(
+              'Save failed (${e.code}): ${e.message ?? 'Check Firestore rules and connection.'}',
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) setState(() => _error = e.toString());
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  List<Marker> get _markers {
+    final out = <Marker>[];
+    if (_startPoint != null)
+      out.add(
+        Marker(
+          point: _startPoint!,
+          width: 42,
+          height: 42,
+          child: const Icon(Icons.trip_origin, color: Colors.green, size: 34),
+        ),
+      );
+    if (_endPoint != null)
+      out.add(
+        Marker(
+          point: _endPoint!,
+          width: 42,
+          height: 42,
+          child: const Icon(Icons.flag, color: Colors.red, size: 34),
+        ),
+      );
+    for (final s in _suggestions.where(
+      (s) => s.selected && s.point.latitude != 0,
+    )) {
+      out.add(
+        Marker(
+          point: s.point,
+          width: 34,
+          height: 34,
+          child: const Icon(Icons.location_on, color: _orange, size: 30),
+        ),
+      );
+    }
+    return out;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF5F7FB),
+      appBar: AppBar(
+        title: Text(
+          widget.routeId == null ? 'Smart Route Builder' : 'Edit Smart Route',
+        ),
+        backgroundColor: Colors.white,
+        foregroundColor: _dark,
+        elevation: 0,
+      ),
+      body: LayoutBuilder(
+        builder: (context, c) {
+          final wide = c.maxWidth > 850;
+          final form = _controls();
+          final map = _mapPanel();
+          return SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 1300),
+                child: wide
+                    ? Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          SizedBox(width: 370, child: form),
+                          const SizedBox(width: 14),
+                          Expanded(child: map),
+                        ],
+                      )
+                    : Column(children: [form, const SizedBox(height: 14), map]),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _controls() => Container(
+    padding: const EdgeInsets.all(16),
+    decoration: BoxDecoration(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(16),
+      border: Border.all(color: const Color(0xFFE8ECF2)),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Text(
+          'Create route to Yashoda Technical Campus',
+          style: TextStyle(
+            fontWeight: FontWeight.w800,
+            fontSize: 17,
+            color: _dark,
+          ),
+        ),
+        const SizedBox(height: 6),
+        const Text(
+          'Enter only the starting point. Destination is fixed to Yashoda Technical Campus, Wadhe, Satara. Route name is generated automatically.',
+          style: TextStyle(color: Color(0xFF788195), fontSize: 12),
+        ),
+        const SizedBox(height: 14),
+        TextField(
+          controller: _start,
+          decoration: const InputDecoration(
+            labelText: 'Starting Point',
+            hintText: 'e.g. Wai, Satara',
+            border: OutlineInputBorder(),
+            prefixIcon: Icon(Icons.trip_origin, color: Colors.green),
+          ),
+        ),
+        const SizedBox(height: 10),
+        TextField(
+          controller: _end,
+          readOnly: true,
+          decoration: const InputDecoration(
+            labelText: 'Fixed Destination',
+            border: OutlineInputBorder(),
+            prefixIcon: Icon(Icons.flag, color: Colors.red),
+          ),
+        ),
+        const SizedBox(height: 12),
+        FilledButton.icon(
+          onPressed: _loading ? null : _buildRoute,
+          style: FilledButton.styleFrom(
+            backgroundColor: _orange,
+            padding: const EdgeInsets.symmetric(vertical: 14),
+          ),
+          icon: _loading
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white,
+                  ),
+                )
+              : const Icon(Icons.route),
+          label: Text(
+            _loading ? 'Finding road route...' : 'Find Route & Stops',
+          ),
+        ),
+        if (_distanceKm != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 10),
+            child: Text(
+              'Road distance: ${_distanceKm!.toStringAsFixed(1)} km • Estimated drive: ${(_durationMin ?? 0).round()} min',
+              style: const TextStyle(fontWeight: FontWeight.w700, color: _dark),
+            ),
+          ),
+        if (_distanceKm != null)
+          const Padding(
+            padding: EdgeInsets.only(top: 4),
+            child: Text(
+              'Time is a routing estimate, not live traffic. Actual travel time may vary.',
+              style: TextStyle(fontSize: 10, color: Color(0xFF788195)),
+            ),
+          ),
+        if (_error != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 10),
+            child: Text(
+              _error!,
+              style: const TextStyle(color: Colors.red, fontSize: 12),
+            ),
+          ),
+        const Divider(height: 24),
+        Row(
+          children: [
+            const Expanded(
+              child: Text(
+                'Route Stops',
+                style: TextStyle(fontWeight: FontWeight.w800, color: _dark),
+              ),
+            ),
+            Text(
+              '${_suggestions.length} added',
+              style: const TextStyle(fontSize: 11, color: Color(0xFF788195)),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          onPressed: _geometry.length < 2
+              ? null
+              : () => setState(() {
+                  _addingStopOnMap = !_addingStopOnMap;
+                  _error = null;
+                }),
+          style: OutlinedButton.styleFrom(
+            foregroundColor: _addingStopOnMap ? Colors.white : _orange,
+            backgroundColor: _addingStopOnMap ? _orange : Colors.white,
+            side: const BorderSide(color: _orange),
+            padding: const EdgeInsets.symmetric(vertical: 12),
+          ),
+          icon: Icon(
+            _addingStopOnMap ? Icons.touch_app : Icons.add_location_alt,
+          ),
+          label: Text(
+            _addingStopOnMap
+                ? 'Click the blue route on map...'
+                : 'Add Stop on Map',
+          ),
+        ),
+        if (_addingStopOnMap)
+          const Padding(
+            padding: EdgeInsets.only(top: 6),
+            child: Text(
+              'Now click near the blue route line. A box will open to enter the stop name.',
+              style: TextStyle(fontSize: 11, color: Color(0xFF788195)),
+            ),
+          ),
+        const SizedBox(height: 8),
+        if (_suggestions.isEmpty)
+          const Text(
+            'No stops added yet. Click Add Stop on Map, then select a point on the blue route.',
+            style: TextStyle(fontSize: 11, color: Color(0xFF788195)),
+          )
+        else
+          ..._suggestions.asMap().entries.map(
+            (entry) => ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              leading: CircleAvatar(
+                radius: 13,
+                backgroundColor: const Color(0xFFFFF0E2),
+                child: Text(
+                  '${entry.key + 1}',
+                  style: const TextStyle(
+                    color: _orange,
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              title: Text(
+                entry.value.name,
+                style: const TextStyle(fontSize: 12),
+              ),
+              subtitle: const Text(
+                'On selected road route',
+                style: TextStyle(fontSize: 10),
+              ),
+              trailing: IconButton(
+                tooltip: 'Remove stop',
+                icon: const Icon(Icons.close, color: Colors.red, size: 19),
+                onPressed: () => _removeStop(entry.value),
+              ),
+            ),
+          ),
+        const SizedBox(height: 10),
+        FilledButton.icon(
+          onPressed: _saving ? null : _saveRoute,
+          style: FilledButton.styleFrom(
+            backgroundColor: const Color(0xFF16865C),
+            padding: const EdgeInsets.symmetric(vertical: 14),
+          ),
+          icon: _saving
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white,
+                  ),
+                )
+              : const Icon(Icons.save),
+          label: Text(_saving ? 'Saving...' : 'Save Route to Firestore'),
+        ),
+      ],
+    ),
+  );
+
+  Widget _mapPanel() => Container(
+    height: 620,
+    clipBehavior: Clip.antiAlias,
+    decoration: BoxDecoration(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(16),
+      border: Border.all(color: const Color(0xFFE8ECF2)),
+    ),
+    child: FlutterMap(
+      mapController: _map,
+      options: MapOptions(
+        initialCenter: _startPoint ?? const LatLng(17.6805, 74.0183),
+        initialZoom: 9,
+        onTap: (tapPosition, point) => _handleMapTap(point),
+      ),
+      children: [
+        TileLayer(
+          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+          userAgentPackageName: 'com.campusbusai.campus_bus_ai',
+        ),
+        if (_geometry.length > 1)
+          PolylineLayer(
+            polylines: [
+              Polyline(
+                points: _geometry,
+                strokeWidth: 5,
+                color: const Color(0xFF087FC4),
+              ),
+            ],
+          ),
+        MarkerLayer(markers: _markers),
+        const RichAttributionWidget(
+          attributions: [TextSourceAttribution('© OpenStreetMap contributors')],
+        ),
+      ],
+    ),
+  );
+}
+
+class _SuggestedRouteStop {
+  final String name;
+  final LatLng point;
+  bool selected;
+  _SuggestedRouteStop(this.name, this.point, {this.selected = true});
 }
