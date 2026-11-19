@@ -145,11 +145,11 @@ class _AdminDashboardState extends State<AdminDashboard> {
     } on FirebaseException catch (e) {
       if (mounted) {
         _message(
-          'Could not update request (${e.code}). Check Firestore rules.',
+          'Could not update the request. Please check your connection or contact the Admin.',
         );
       }
     } catch (e) {
-      if (mounted) _message('Action failed: $e');
+      if (mounted) _message('Something went wrong. Please try again.');
     } finally {
       if (mounted) setState(() => _working = false);
     }
@@ -772,40 +772,57 @@ class _AdminDashboardState extends State<AdminDashboard> {
               ? 3
               : 2;
           final w = (c.maxWidth - (cols - 1) * 12) / cols;
-          final cards = [
-            (
+          final db = FirebaseFirestore.instance;
+          final cards = <Widget>[
+            _liveMetric(
               'Total Buses',
-              '12',
-              'Fleet records',
+              db.collection('buses').snapshots(),
               Icons.directions_bus,
               _orange,
             ),
-            ('Total Students', '416', 'Registered', Icons.groups, _blue),
-            (
+            _liveMetric(
+              'Total Students',
+              db
+                  .collection('users')
+                  .where('role', isEqualTo: 'student')
+                  .snapshots(),
+              Icons.groups,
+              _blue,
+            ),
+            _liveMetric(
               'Total Drivers',
-              '18',
-              'Approved accounts',
+              db
+                  .collection('users')
+                  .where('role', isEqualTo: 'driver')
+                  .snapshots(),
               Icons.badge,
               const Color(0xFF6C63FF),
             ),
-            (
-              "Today's Trips",
-              '24',
-              'Demo count',
-              Icons.route,
-              const Color(0xFFDA8B18),
-            ),
-            (
-              'On-time Rate',
-              '92%',
-              'Demo metric',
-              Icons.schedule,
+            _liveMetric(
+              'Active Buses',
+              db
+                  .collection('buses')
+                  .where('isActive', isEqualTo: true)
+                  .snapshots(),
+              Icons.directions_bus_filled,
               const Color(0xFF15966A),
             ),
-            (
+            _liveMetric(
+              'Active Drivers',
+              db
+                  .collection('users')
+                  .where('role', isEqualTo: 'driver')
+                  .where('isActive', isEqualTo: true)
+                  .snapshots(),
+              Icons.verified_user,
+              const Color(0xFF15966A),
+            ),
+            _liveMetric(
               'Pending Approvals',
-              null,
-              'Driver requests',
+              db
+                  .collection('driver_requests')
+                  .where('status', isEqualTo: 'pending')
+                  .snapshots(),
               Icons.person_add_alt_1,
               Colors.red,
             ),
@@ -814,18 +831,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
             spacing: 12,
             runSpacing: 12,
             children: [
-              for (final c in cards)
-                SizedBox(
-                  width: w,
-                  child: _statCard(
-                    c.$1,
-                    c.$2 ?? '…',
-                    c.$3,
-                    c.$4,
-                    c.$5,
-                    pending: c.$2 == null,
-                  ),
-                ),
+              for (final card in cards) SizedBox(width: w, child: card),
             ],
           );
         },
@@ -1155,7 +1161,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
             builder: (context, snapshot) {
               if (snapshot.hasError) {
                 return Center(
-                  child: Text('Could not load requests: ${snapshot.error}'),
+                  child: Text('Could not load requests. Please try again.'),
                 );
               }
               if (!snapshot.hasData) {
@@ -1476,7 +1482,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
       if (snapshot.hasError) {
         return _panel(
           'Routes',
-          Text('Could not load routes: ${snapshot.error}'),
+          Text('Could not load routes. Please try again.'),
         );
       }
       if (!snapshot.hasData) {
@@ -1827,8 +1833,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
           .delete();
       if (mounted) _message('Route deleted.');
     } on FirebaseException catch (e) {
-      if (mounted)
-        _message('Delete failed (${e.code}). Check Firestore rules.');
+      if (mounted) _message('Could not delete this item. Please try again.');
     }
   }
 
@@ -1838,7 +1843,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
       if (snapshot.hasError)
         return _panel(
           'Bus List',
-          Text('Could not load buses: ${snapshot.error}'),
+          Text('Could not load buses. Please try again.'),
         );
       if (snapshot.connectionState == ConnectionState.waiting)
         return const Center(child: CircularProgressIndicator());
@@ -2134,9 +2139,66 @@ class _AdminDashboardState extends State<AdminDashboard> {
                     if (busId == null) {
                       data['createdAt'] = FieldValue.serverTimestamp();
                       data['createdBy'] = uid;
-                      final created = await ref.add(data);
+                      final db = FirebaseFirestore.instance;
+                      final counterRef = db
+                          .collection('system_counters')
+                          .doc('bus_student_prefix');
+
+                      // If this is the first run with an existing fleet, seed
+                      // the counter from prefixes already assigned to buses.
+                      // The transaction then becomes the single source of truth
+                      // for all future bus-prefix allocations.
+                      var firstAvailableIndex = 0;
+                      final existingBuses = await ref.get();
+                      for (final busDoc in existingBuses.docs) {
+                        final existingPrefix =
+                            (busDoc.data()['studentIdPrefix'] ?? '')
+                                .toString()
+                                .trim()
+                                .toUpperCase();
+                        if (existingPrefix.length == 1) {
+                          final code = existingPrefix.codeUnitAt(0);
+                          if (code >= 65 && code <= 90) {
+                            firstAvailableIndex =
+                                firstAvailableIndex > code - 64
+                                ? firstAvailableIndex
+                                : code - 64;
+                          }
+                        }
+                      }
+
+                      late DocumentReference<Map<String, dynamic>> createdRef;
+                      await db.runTransaction((tx) async {
+                        final counterSnap = await tx.get(counterRef);
+                        final storedIndex =
+                            (counterSnap.data()?['nextPrefixIndex'] as num?)
+                                ?.toInt();
+
+                        // Existing counter wins; otherwise start after the
+                        // highest prefix already used (A=1, B=2, ...).
+                        final nextIndex = storedIndex ?? firstAvailableIndex;
+                        if (nextIndex >= 26) {
+                          throw StateError(
+                            'Maximum 26 bus prefixes reached. Configure additional prefixes with Admin.',
+                          );
+                        }
+
+                        final prefix = String.fromCharCode(65 + nextIndex);
+                        createdRef = ref.doc();
+
+                        tx.set(createdRef, {
+                          ...data,
+                          'studentIdPrefix': prefix,
+                          'nextStudentSequence': 1,
+                        });
+
+                        tx.set(counterRef, {
+                          'nextPrefixIndex': nextIndex + 1,
+                          'updatedAt': FieldValue.serverTimestamp(),
+                        });
+                      });
                       await _addBusHistory(
-                        created.id,
+                        createdRef.id,
                         'Bus Added',
                         'Bus ${busNumber.text.trim()} was added.',
                       );
@@ -2160,10 +2222,11 @@ class _AdminDashboardState extends State<AdminDashboard> {
                     debugPrint('BUS SAVE ERROR: ${e.code} ${e.message}');
                     if (mounted)
                       _message(
-                        'Save failed (${e.code}). Check Firestore rules.',
+                        'Could not save changes. Please check your connection or contact the Admin.',
                       );
                   } catch (e) {
-                    if (mounted) _message('Save failed: $e');
+                    if (mounted)
+                      _message('Could not save changes. Please try again.');
                   }
                 },
                 child: const Text('Save Bus'),
@@ -2236,8 +2299,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
       );
       if (mounted) _message(active ? 'Bus activated.' : 'Bus deactivated.');
     } on FirebaseException catch (e) {
-      if (mounted)
-        _message('Status update failed (${e.code}). Check Firestore rules.');
+      if (mounted) _message('Could not update the status. Please try again.');
     }
   }
 
@@ -2580,35 +2642,228 @@ class _AdminDashboardState extends State<AdminDashboard> {
     ),
   );
 
-  Widget _usersPage() {
-    if (_selected == 'Admin Accounts') {
-      return _liveAdminAccounts();
+  Widget _liveMetric(
+    String title,
+    Stream<QuerySnapshot<Map<String, dynamic>>> stream,
+    IconData icon,
+    Color color,
+  ) => StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+    stream: stream,
+    builder: (context, snapshot) => _statCard(
+      title,
+      snapshot.hasError
+          ? '!'
+          : snapshot.hasData
+          ? '${snapshot.data!.docs.length}'
+          : '…',
+      snapshot.hasError ? 'Unable to load data' : 'Live Firestore count',
+      icon,
+      color,
+    ),
+  );
+
+  Future<void> _setUserActive(String uid, bool active) async {
+    try {
+      await FirebaseFirestore.instance.collection('users').doc(uid).update({
+        'isActive': active,
+        'updatedAt': FieldValue.serverTimestamp(),
+        'updatedBy': FirebaseAuth.instance.currentUser?.uid,
+      });
+      if (mounted)
+        _message(active ? 'Account activated.' : 'Account deactivated.');
+    } on FirebaseException catch (e) {
+      if (mounted) _message('Could not update the account. Please try again.');
     }
+  }
 
-    final Map<String, (String, String, IconData, Color)> summaries = {
-      'Students': ('Total Students', '416', Icons.school, _blue),
-      'Parents': ('Total Parents', '390', Icons.family_restroom, _orange),
-      'Drivers': ('Total Drivers', '18', Icons.badge, const Color(0xFF15966A)),
-    };
-
-    final item = summaries[_selected] ?? summaries['Students']!;
-
-    return Column(
-      children: [
-        _statCard(item.$1, item.$2, 'Demo value', item.$3, item.$4),
-        const SizedBox(height: 16),
-        _panel(
-          _selected,
-          const Padding(
-            padding: EdgeInsets.all(16),
-            child: Text(
-              'This section still uses demo data. '
-              'Live integration will be added separately.',
-              style: TextStyle(color: _muted),
+  Widget _usersPage() {
+    if (_selected == 'Admin Accounts') return _liveAdminAccounts();
+    final role = _selected == 'Students'
+        ? 'student'
+        : _selected == 'Parents'
+        ? 'parent'
+        : 'driver';
+    final color = role == 'driver'
+        ? const Color(0xFF15966A)
+        : role == 'parent'
+        ? _orange
+        : _blue;
+    final stream = FirebaseFirestore.instance
+        .collection('users')
+        .where('role', isEqualTo: role)
+        .snapshots();
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: stream,
+      builder: (context, snapshot) {
+        if (snapshot.hasError)
+          return _panel(
+            '$_selected',
+            Text('Could not load users. Please try again.'),
+          );
+        if (snapshot.connectionState == ConnectionState.waiting)
+          return const Center(child: CircularProgressIndicator());
+        final docs = snapshot.data?.docs ?? [];
+        final activeCount = docs
+            .where((d) => d.data()['isActive'] == true)
+            .length;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            LayoutBuilder(
+              builder: (context, c) {
+                final cols = c.maxWidth > 650 ? 3 : 1;
+                final width = (c.maxWidth - (cols - 1) * 12) / cols;
+                return Wrap(
+                  spacing: 12,
+                  runSpacing: 12,
+                  children: [
+                    SizedBox(
+                      width: width,
+                      child: _statCard(
+                        'Total $_selected',
+                        '${docs.length}',
+                        'Live Firestore records',
+                        Icons.people_alt,
+                        color,
+                      ),
+                    ),
+                    SizedBox(
+                      width: width,
+                      child: _statCard(
+                        'Active',
+                        '$activeCount',
+                        'Active accounts',
+                        Icons.check_circle,
+                        const Color(0xFF15966A),
+                      ),
+                    ),
+                    SizedBox(
+                      width: width,
+                      child: _statCard(
+                        'Inactive',
+                        '${docs.length - activeCount}',
+                        'Disabled accounts',
+                        Icons.block,
+                        Colors.red,
+                      ),
+                    ),
+                  ],
+                );
+              },
             ),
-          ),
-        ),
-      ],
+            const SizedBox(height: 16),
+            _panel(
+              '$_selected (${docs.length})',
+              docs.isEmpty
+                  ? const Padding(
+                      padding: EdgeInsets.all(22),
+                      child: Text('No records found for this role.'),
+                    )
+                  : Column(
+                      children: [
+                        for (var i = 0; i < docs.length; i++) ...[
+                          if (i > 0) const Divider(color: _line),
+                          Builder(
+                            builder: (context) {
+                              final doc = docs[i];
+                              final d = doc.data();
+                              final active = d['isActive'] == true;
+                              final name = (d['name'] ?? 'Unnamed User')
+                                  .toString();
+                              final subtitle =
+                                  [
+                                        d['email'],
+                                        d['mobile'],
+                                        if (role == 'driver')
+                                          'Employee ID: ${d['employeeId'] ?? '-'}',
+                                      ]
+                                      .where(
+                                        (v) =>
+                                            v != null &&
+                                            v.toString().trim().isNotEmpty,
+                                      )
+                                      .join(' • ');
+                              return Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 8,
+                                ),
+                                child: Row(
+                                  children: [
+                                    CircleAvatar(
+                                      backgroundColor: color.withValues(
+                                        alpha: .12,
+                                      ),
+                                      child: Icon(
+                                        role == 'driver'
+                                            ? Icons.badge
+                                            : role == 'parent'
+                                            ? Icons.family_restroom
+                                            : Icons.school,
+                                        color: color,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            name,
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.w700,
+                                              color: _dark,
+                                            ),
+                                          ),
+                                          Text(
+                                            subtitle.isEmpty
+                                                ? 'UID: ${doc.id}'
+                                                : subtitle,
+                                            style: const TextStyle(
+                                              fontSize: 11,
+                                              color: _muted,
+                                            ),
+                                          ),
+                                          Text(
+                                            active ? 'Active' : 'Inactive',
+                                            style: TextStyle(
+                                              fontSize: 11,
+                                              color: active
+                                                  ? Colors.green
+                                                  : Colors.red,
+                                              fontWeight: FontWeight.w700,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    if (role == 'driver')
+                                      IconButton(
+                                        tooltip: active
+                                            ? 'Deactivate driver'
+                                            : 'Activate driver',
+                                        onPressed: () =>
+                                            _setUserActive(doc.id, !active),
+                                        icon: Icon(
+                                          active
+                                              ? Icons.toggle_on
+                                              : Icons.toggle_off,
+                                          color: active ? Colors.green : _muted,
+                                          size: 32,
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
+                        ],
+                      ],
+                    ),
+            ),
+          ],
+        );
+      },
     );
   }
 
@@ -2961,7 +3216,9 @@ class BusDetailsDashboardPage extends StatelessWidget {
         if (snapshot.hasError) {
           return Scaffold(
             appBar: AppBar(title: const Text('Bus Details')),
-            body: Center(child: Text('Unable to load bus: ${snapshot.error}')),
+            body: Center(
+              child: Text('Could not load bus information. Please try again.'),
+            ),
           );
         }
         if (!snapshot.hasData) {
@@ -3197,7 +3454,7 @@ class BusSectionPage extends StatelessWidget {
           body: snapshot.hasError
               ? Center(
                   child: Text(
-                    'Could not load bus information: ${snapshot.error}',
+                    'Could not load bus information. Please try again.',
                   ),
                 )
               : !snapshot.hasData
@@ -3413,7 +3670,11 @@ class BusSectionPage extends StatelessWidget {
     } on FirebaseException catch (e) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not unassign route (${e.code}).')),
+          SnackBar(
+            content: Text(
+              'Could not remove the route assignment. Please try again.',
+            ),
+          ),
         );
       }
     }
@@ -3529,7 +3790,11 @@ class BusSectionPage extends StatelessWidget {
     } on FirebaseException catch (e) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not unassign driver (${e.code}).')),
+          SnackBar(
+            content: Text(
+              'Could not remove the driver assignment. Please try again.',
+            ),
+          ),
         );
       }
     }
@@ -3694,7 +3959,9 @@ class BusSectionPage extends StatelessWidget {
                     if (context.mounted)
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
-                          content: Text('Status update failed: ${e.code}'),
+                          content: Text(
+                            'Could not update the status. Please try again.',
+                          ),
                         ),
                       );
                   }
@@ -3759,7 +4026,11 @@ class BusSectionPage extends StatelessWidget {
                     } on FirebaseException catch (e) {
                       if (context.mounted)
                         ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('Delete failed: ${e.code}')),
+                          SnackBar(
+                            content: Text(
+                              'Could not delete this item. Please try again.',
+                            ),
+                          ),
                         );
                     }
                   }
@@ -3828,7 +4099,7 @@ class BusMaintenanceHistoryPage extends StatelessWidget {
           if (snapshot.hasError)
             return Center(
               child: Text(
-                'Could not load maintenance history: ${snapshot.error}',
+                'Could not load maintenance history. Please try again.',
               ),
             );
           if (!snapshot.hasData)
@@ -3961,16 +4232,16 @@ class _AssignRoutePageState extends State<AssignRoutePage> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            'Route assignment failed (${e.code}). Check Firestore rules.',
-          ),
+          content: Text('Could not assign the route. Please try again.'),
         ),
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Route assignment failed: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not assign the route. Please try again.'),
+        ),
+      );
     } finally {
       if (mounted) {
         setState(() {
@@ -4035,7 +4306,7 @@ class _AssignRoutePageState extends State<AssignRoutePage> {
                     child: Padding(
                       padding: const EdgeInsets.all(24),
                       child: Text(
-                        'Could not load routes: ${snapshot.error}',
+                        'Could not load routes. Please try again.',
                         textAlign: TextAlign.center,
                       ),
                     ),
@@ -4283,16 +4554,16 @@ class _AssignDriverPageState extends State<AssignDriverPage> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            'Driver assignment failed (${e.code}). Check Firestore rules.',
-          ),
+          content: Text('Could not assign the driver. Please try again.'),
         ),
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Driver assignment failed: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not assign the driver. Please try again.'),
+        ),
+      );
     } finally {
       if (mounted) {
         setState(() {
@@ -4359,7 +4630,7 @@ class _AssignDriverPageState extends State<AssignDriverPage> {
                     child: Padding(
                       padding: const EdgeInsets.all(24),
                       child: Text(
-                        'Could not load approved drivers: ${snapshot.error}',
+                        'Could not load approved drivers. Please try again.',
                         textAlign: TextAlign.center,
                       ),
                     ),
@@ -4550,7 +4821,7 @@ class BusCategoryListPage extends StatelessWidget {
         builder: (context, snapshot) {
           if (snapshot.hasError) {
             return Center(
-              child: Text('Could not load buses: ${snapshot.error}'),
+              child: Text('Could not load buses. Please try again.'),
             );
           }
           if (snapshot.connectionState == ConnectionState.waiting) {

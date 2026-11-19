@@ -1,1 +1,18 @@
-{"flutter":{"platforms":{"dart":{"lib/firebase_options.dart":{"projectId":"campusbus-ai","configurations":{"web":"1:210598726850:web:efd0fea7d49bcf688fbf5b"}}}}}}
+{
+  "flutter": {
+    "platforms": {
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "campusbus-ai",
+          "configurations": {
+            "web": "1:210598726850:web:efd0fea7d49bcf688fbf5b"
+          }
+        }
+      }
+    }
+  },
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  }
+}

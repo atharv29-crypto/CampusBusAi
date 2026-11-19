@@ -39,6 +39,14 @@ class _LoginScreenState extends State<LoginScreen> {
         password: _passwordController.text,
       );
       // Firebase auth state change in main.dart opens the user's dashboard.
+    } on AuthFlowException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(e.message),
+          duration: const Duration(seconds: 5),
+        ),
+      );
     } on FirebaseAuthException catch (e) {
       if (!mounted) return;
 

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 class ParentDashboard extends StatefulWidget {
   const ParentDashboard({super.key});
@@ -238,58 +239,99 @@ class _ParentDashboardState extends State<ParentDashboard> {
     ],
   );
 
-  Widget _childCard() => Container(
-    padding: const EdgeInsets.all(17),
-    decoration: BoxDecoration(
-      gradient: const LinearGradient(
-        colors: [Color(0xFFFF7900), Color(0xFFFF9D45)],
-      ),
-      borderRadius: BorderRadius.circular(18),
-      boxShadow: [
-        BoxShadow(
-          color: orange.withValues(alpha: .18),
-          blurRadius: 16,
-          offset: const Offset(0, 7),
-        ),
-      ],
-    ),
-    child: const Row(
-      children: [
-        CircleAvatar(
-          radius: 29,
-          backgroundColor: Colors.white,
-          child: Icon(Icons.school_rounded, color: orange, size: 30),
-        ),
-        SizedBox(width: 14),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Linked Student',
-                style: TextStyle(color: Colors.white70, fontSize: 12),
-              ),
-              SizedBox(height: 4),
-              Text(
-                'Student name will appear here',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 17,
+  Widget _childCard() {
+    final parentUid = FirebaseAuth.instance.currentUser?.uid;
+    if (parentUid == null) return const SizedBox.shrink();
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('parent_link_requests')
+          .where('parentUid', isEqualTo: parentUid)
+          .where('status', isEqualTo: 'approved')
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+          return Container(
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: const Text(
+              'Parent linking request pending. Your child information will appear after the student approves your request.',
+            ),
+          );
+        }
+        final request = snapshot.data!.docs.first.data();
+        final studentUid = (request['studentUid'] ?? '').toString();
+        return FutureBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+          future: FirebaseFirestore.instance
+              .collection('users')
+              .doc(studentUid)
+              .get(),
+          builder: (context, studentSnapshot) {
+            final student = studentSnapshot.data?.data() ?? {};
+            return Container(
+              padding: const EdgeInsets.all(17),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFFFF7900), Color(0xFFFF9D45)],
                 ),
+                borderRadius: BorderRadius.circular(18),
+                boxShadow: [
+                  BoxShadow(
+                    color: orange.withValues(alpha: .18),
+                    blurRadius: 16,
+                    offset: const Offset(0, 7),
+                  ),
+                ],
               ),
-              SizedBox(height: 4),
-              Text(
-                'Route: Lonand to Campus',
-                style: TextStyle(color: Colors.white, fontSize: 12),
+              child: Row(
+                children: [
+                  const CircleAvatar(
+                    radius: 29,
+                    backgroundColor: Colors.white,
+                    child: Icon(Icons.school_rounded, color: orange, size: 30),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Approved Linked Student',
+                          style: TextStyle(color: Colors.white70, fontSize: 12),
+                        ),
+                        Text(
+                          (student['name'] ?? 'Loading student...').toString(),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 17,
+                          ),
+                        ),
+                        Text(
+                          'Student Bus ID: ${student['studentBusId'] ?? request['studentBusId'] ?? '-'} • Bus: ${student['busNumber'] ?? student['busId'] ?? 'Not assigned'}',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Icon(
+                    Icons.verified_user_outlined,
+                    color: Colors.white,
+                    size: 25,
+                  ),
+                ],
               ),
-            ],
-          ),
-        ),
-        Icon(Icons.verified_user_outlined, color: Colors.white, size: 25),
-      ],
-    ),
-  );
+            );
+          },
+        );
+      },
+    );
+  }
 
   Widget _tripPage() => ListView(
     padding: const EdgeInsets.all(20),
@@ -448,7 +490,7 @@ class _ParentDashboardState extends State<ParentDashboard> {
     } on FirebaseAuthException catch (e) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Logout failed: ${e.message ?? e.code}')),
+        SnackBar(content: Text('Could not log out. Please try again.')),
       );
     } catch (e) {
       if (!context.mounted) return;

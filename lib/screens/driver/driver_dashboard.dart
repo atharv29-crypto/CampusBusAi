@@ -1,6 +1,7 @@
-import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
+import 'driver_attendance_page.dart';
 
 const driverOrange = Color(0xFFFF7900);
 const driverDark = Color(0xFF172033);
@@ -9,349 +10,435 @@ const driverBg = Color(0xFFF5F7FB);
 
 class DriverDashboard extends StatefulWidget {
   const DriverDashboard({super.key});
-
   @override
   State<DriverDashboard> createState() => _DriverDashboardState();
 }
 
 class _DriverDashboardState extends State<DriverDashboard> {
-  bool tripStarted = true;
+  final _db = FirebaseFirestore.instance;
   String selectedTab = 'Dashboard';
-  String maintenanceIssueType = 'General Inspection';
-  final TextEditingController maintenanceIssueController =
-      TextEditingController();
-  bool issueSubmitted = false;
+  bool _busy = false;
+  String issueType = 'General Inspection';
+  final issueController = TextEditingController();
 
-  final int expectedStudents = 40;
-  final Set<String> boarded = {
-    'Aarav Shinde',
-    'Sneha Jadhav',
-    'Rohan Patil',
-    'Pooja More',
-    'Aditya Kadam',
-  };
-
-  final List<Map<String, dynamic>> students = [
-    {'name': 'Aarav Shinde', 'stop': 'Satara MIDC', 'id': 'CSE-01'},
-    {'name': 'Sneha Jadhav', 'stop': 'Power House', 'id': 'CSE-02'},
-    {'name': 'Rohan Patil', 'stop': 'Power House', 'id': 'CSE-03'},
-    {'name': 'Pooja More', 'stop': 'Karanje', 'id': 'CSE-04'},
-    {'name': 'Aditya Kadam', 'stop': 'College Main Gate', 'id': 'CSE-05'},
-    {'name': 'Neha Patil', 'stop': 'Satara MIDC', 'id': 'CSE-06'},
-    {'name': 'Om Jadhav', 'stop': 'Karanje', 'id': 'CSE-07'},
-    {'name': 'Sakshi More', 'stop': 'Power House', 'id': 'CSE-08'},
-  ];
-
-  final List<Map<String, dynamic>> stops = [
-    {'name': 'Satara MIDC', 'expected': 15, 'boarded': 15},
-    {'name': 'Power House', 'expected': 10, 'boarded': 8},
-    {'name': 'Karanje', 'expected': 8, 'boarded': 0},
-    {'name': 'College Main Gate', 'expected': 7, 'boarded': 0},
-  ];
-
-  int get boardedCount => boarded.length;
-  int get remainingCount => expectedStudents - boardedCount;
+  String get _uid => FirebaseAuth.instance.currentUser!.uid;
+  String get _dateKey {
+    final n = DateTime.now();
+    return '${n.year.toString().padLeft(4, '0')}${n.month.toString().padLeft(2, '0')}${n.day.toString().padLeft(2, '0')}';
+  }
 
   @override
   void dispose() {
-    maintenanceIssueController.dispose();
+    issueController.dispose();
     super.dispose();
   }
 
-  void showMessage(String message) {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
+  void _message(String value) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(value)));
+  }
+
+  Future<void> _startTrip(String busId, Map<String, dynamic> bus) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      final ref = _db.collection('trips').doc('${busId}_$_dateKey');
+      await _db.runTransaction((tx) async {
+        final old = await tx.get(ref);
+        if (old.exists && old.data()?['status'] == 'completed') {
+          throw Exception("Today's trip has already been completed.");
+        }
+        if (old.exists && old.data()?['status'] == 'inProgress') {
+          throw Exception(" The trip is already in progress.");
+        }
+        tx.set(ref, {
+          'busId': busId,
+          'busNumber': bus['busNumber'] ?? '',
+          'driverId': _uid,
+          'dateKey': _dateKey,
+          'status': 'inProgress',
+          'startedAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      });
+      _message('Trip started successfully.');
+    } catch (e) {
+      _message('Trip start failed: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _completeTrip(String busId) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Complete Trip?'),
+        content: const Text(
+          'All students who are currently on the bus will be marked as dropped at the final stop.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Complete'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true || _busy) return;
+    setState(() => _busy = true);
+    try {
+      final tripId = '${busId}_$_dateKey';
+      final tripRef = _db.collection('trips').doc(tripId);
+      final trip = await tripRef.get();
+      if (!trip.exists || trip.data()?['status'] != 'inProgress') {
+        throw Exception("No active trip was found.");
+      }
+      final records = await _db
+          .collection('attendance')
+          .where('tripId', isEqualTo: tripId)
+          .where('driverId', isEqualTo: _uid)
+          .where('busId', isEqualTo: busId)
+          .where('status', isEqualTo: 'boarded')
+          .get();
+      // Firestore batches support at most 500 writes.
+      for (var start = 0; start < records.docs.length; start += 450) {
+        final batch = _db.batch();
+        for (final doc in records.docs.skip(start).take(450)) {
+          batch.update(doc.reference, {
+            'status': 'dropped',
+            'dropStop': 'College – Final Stop',
+            'droppedAt': FieldValue.serverTimestamp(),
+            'updatedAt': FieldValue.serverTimestamp(),
+            'dropMarkedByTripCompletion': true,
+          });
+        }
+        await batch.commit();
+      }
+      await tripRef.update({
+        'status': 'completed',
+        'completedAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      _message(
+        'Trip completed. ${records.docs.length} students marked as dropped.',
+      );
+    } catch (e) {
+      _message('Trip completion failed: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _submitMaintenance(String busId, String busNumber) async {
+    final description = issueController.text.trim();
+    if (description.isEmpty) {
+      _message('Please describe the issue.');
+      return;
+    }
+    setState(() => _busy = true);
+    try {
+      await _db.collection('maintenance_reports').add({
+        'driverId': _uid,
+        'busId': busId,
+        'busNumber': busNumber,
+        'issueType': issueType,
+        'description': description,
+        'status': 'pending',
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+      issueController.clear();
+      _message('Maintenance issue submitted to the Admin.');
+    } catch (e) {
+      _message('Issue submit failed: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _sendSOS(String busId, String busNumber) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Emergency SOS'),
+        content: const Text(
+          'Send an SOS alert only if there is a real emergency. Do you want to alert the Admin and Transport Office?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Send SOS'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    try {
+      await _db.collection('emergency_alerts').add({
+        'driverId': _uid,
+        'busId': busId,
+        'busNumber': busNumber,
+        'message': 'Driver emergency SOS',
+        'status': 'open',
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+      _message(
+        'SOS alert saved. The Admin Dashboard must be set up to receive this alert.',
+      );
+    } catch (e) {
+      _message('SOS failed: $e');
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
-
     if (user == null) {
       return const Scaffold(
-        body: Center(
-          child: Text('Please sign in to access the Driver Dashboard.'),
-        ),
+        body: Center(child: Text('Please sign in to access Driver Dashboard.')),
       );
     }
-
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid)
-          .snapshots(),
-      builder: (context, snapshot) {
-        if (snapshot.hasError) {
-          return Scaffold(
-            body: Center(
-              child: Text('Unable to load driver profile: ${snapshot.error}'),
-            ),
-          );
-        }
-
-        if (snapshot.connectionState == ConnectionState.waiting) {
+      stream: _db.collection('users').doc(user.uid).snapshots(),
+      builder: (context, profileSnap) {
+        if (profileSnap.hasError)
+          return _errorScaffold('Profile load error: ${profileSnap.error}');
+        if (!profileSnap.hasData)
           return const Scaffold(
             body: Center(child: CircularProgressIndicator()),
           );
-        }
-
-        final profile = snapshot.data?.data();
+        final profile = profileSnap.data!.data();
         if (profile == null ||
             profile['role'] != 'driver' ||
             profile['isActive'] != true) {
-          return const Scaffold(
-            body: Center(
-              child: Text(
-                'Driver profile not found or account is inactive. Contact Admin.',
-              ),
-            ),
+          return _errorScaffold(
+            'Driver profile not found or account is inactive. Please contact the Admin.',
           );
         }
-
-        final driverName = (profile['name'] ?? 'Driver').toString();
-        final busNumber = (profile['busNumber'] ?? 'NOT-ASSIGNED').toString();
-        final routeName = (profile['routeName'] ?? 'Route not assigned')
-            .toString();
-
-        return Scaffold(
-          backgroundColor: driverBg,
-          body: Column(
-            children: [
-              _topBar(driverName),
-              Expanded(
-                child: Row(
-                  children: [
-                    if (MediaQuery.sizeOf(context).width >= 1100) _sidebar(),
-                    Expanded(
-                      child: selectedTab == 'Bus Maintenance'
-                          ? SingleChildScrollView(
-                              padding: const EdgeInsets.all(20),
-                              child: _maintenancePage(busNumber, routeName),
-                            )
-                          : SingleChildScrollView(
-                              padding: const EdgeInsets.all(20),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  _welcome(driverName, busNumber, routeName),
-                                  const SizedBox(height: 20),
-                                  _summaryCards(busNumber, routeName),
-                                  const SizedBox(height: 20),
-                                  LayoutBuilder(
-                                    builder: (context, constraints) {
-                                      if (constraints.maxWidth < 850) {
-                                        return Column(
-                                          children: [
-                                            _tripPanel(),
-                                            const SizedBox(height: 16),
-                                            _routePanel(),
-                                          ],
-                                        );
-                                      }
-
-                                      return Row(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Expanded(child: _tripPanel()),
-                                          const SizedBox(width: 16),
-                                          Expanded(child: _routePanel()),
-                                        ],
-                                      );
-                                    },
-                                  ),
-                                  const SizedBox(height: 16),
-                                  LayoutBuilder(
-                                    builder: (context, constraints) {
-                                      if (constraints.maxWidth < 850) {
-                                        return Column(
-                                          children: [
-                                            _stopWisePanel(),
-                                            const SizedBox(height: 16),
-                                            _studentsPanel(),
-                                            const SizedBox(height: 16),
-                                            _activityPanel(),
-                                          ],
-                                        );
-                                      }
-
-                                      return Row(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Expanded(child: _stopWisePanel()),
-                                          const SizedBox(width: 14),
-                                          Expanded(child: _studentsPanel()),
-                                          const SizedBox(width: 14),
-                                          Expanded(child: _activityPanel()),
-                                        ],
-                                      );
-                                    },
-                                  ),
-                                  const SizedBox(height: 20),
-                                  const Center(
-                                    child: Text(
-                                      'CampusBusAI 360 • Driver Profile: Live • Trip/Attendance: Demo',
-                                      style: TextStyle(
-                                        color: driverMuted,
-                                        fontSize: 12,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
+        final name = (profile['name'] ?? 'Driver').toString();
+        return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+          stream: _db
+              .collection('buses')
+              .where('driverId', isEqualTo: _uid)
+              .snapshots(),
+          builder: (context, busSnap) {
+            if (busSnap.hasError)
+              return _errorScaffold('Bus load error: ${busSnap.error}');
+            if (!busSnap.hasData)
+              return const Scaffold(
+                body: Center(child: CircularProgressIndicator()),
+              );
+            if (busSnap.data!.docs.isEmpty) {
+              return _shell(name, _noBusPage(name));
+            }
+            final busDoc = busSnap.data!.docs.first;
+            final bus = busDoc.data();
+            final busId = busDoc.id;
+            final busNumber = (bus['busNumber'] ?? busId).toString();
+            final routeName =
+                (bus['routeName'] ??
+                        profile['routeName'] ??
+                        'Route not assigned')
+                    .toString();
+            return _shell(
+              name,
+              selectedTab == 'Attendance'
+                  ? const SingleChildScrollView(
+                      padding: EdgeInsets.all(20),
+                      child: DriverAttendancePage(),
+                    )
+                  : selectedTab == 'Bus Maintenance'
+                  ? _maintenance(busId, busNumber)
+                  : _dashboard(name, busId, busNumber, routeName, bus),
+            );
+          },
         );
       },
     );
   }
 
-  Widget _topBar(String driverName) {
-    return Container(
-      height: 75,
-      color: Colors.white,
-      padding: const EdgeInsets.symmetric(horizontal: 22),
-      child: Row(
-        children: [
-          const Icon(
-            Icons.directions_bus_rounded,
-            color: driverOrange,
-            size: 35,
+  Widget _errorScaffold(String message) => Scaffold(
+    body: Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Text(message, textAlign: TextAlign.center),
+      ),
+    ),
+  );
+
+  Widget _shell(String name, Widget content) => Scaffold(
+    backgroundColor: driverBg,
+    body: Column(
+      children: [
+        _topBar(name),
+        Expanded(
+          child: Row(
+            children: [
+              if (MediaQuery.sizeOf(context).width >= 1000) _sidebar(),
+              Expanded(child: content),
+            ],
           ),
-          const SizedBox(width: 10),
-          const Expanded(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'CampusBusAI 360',
-                  style: TextStyle(
-                    color: driverDark,
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                Text(
-                  'Track • Predict • Protect',
-                  style: TextStyle(color: driverMuted, fontSize: 12),
-                ),
-              ],
-            ),
+        ),
+      ],
+    ),
+  );
+
+  Future<void> _logout() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Logout?'),
+        content: const Text(
+          'Are you sure you want to log out of your Driver account?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
           ),
-          if (MediaQuery.sizeOf(context).width > 650)
-            const Expanded(
-              child: TextField(
-                decoration: InputDecoration(
-                  hintText: 'Search students, stops, routes...',
-                  prefixIcon: Icon(Icons.search),
-                  filled: true,
-                  fillColor: driverBg,
-                  border: OutlineInputBorder(
-                    borderSide: BorderSide.none,
-                    borderRadius: BorderRadius.all(Radius.circular(25)),
-                  ),
-                ),
-              ),
-            ),
-          const SizedBox(width: 8),
-          IconButton(
-            tooltip: 'Bus Maintenance',
-            onPressed: () => setState(() => selectedTab = 'Bus Maintenance'),
-            icon: const Icon(Icons.build_circle_outlined, color: driverOrange),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            icon: const Icon(Icons.logout),
+            label: const Text('Logout'),
           ),
-          IconButton(
-            onPressed: () => showMessage('Notifications demo'),
-            icon: const Icon(Icons.notifications_none_rounded),
-          ),
-          const CircleAvatar(
-            backgroundColor: Color(0xFFFFE8D6),
-            child: Icon(Icons.person, color: driverOrange),
-          ),
-          if (MediaQuery.sizeOf(context).width > 500) ...[
-            const SizedBox(width: 10),
-            Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(driverName, style: TextStyle(fontWeight: FontWeight.bold)),
-                Text(
-                  'Driver',
-                  style: TextStyle(color: driverMuted, fontSize: 12),
-                ),
-              ],
-            ),
-          ],
         ],
       ),
     );
+    if (confirm != true) return;
+    try {
+      await FirebaseAuth.instance.signOut();
+    } catch (e) {
+      _message('Logout failed: $e');
+    }
   }
 
+  Widget _topBar(String name) => Container(
+    height: 72,
+    color: Colors.white,
+    padding: const EdgeInsets.symmetric(horizontal: 20),
+    child: Row(
+      children: [
+        const Icon(Icons.directions_bus, color: driverOrange, size: 32),
+        const SizedBox(width: 10),
+        const Expanded(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'CampusBusAI 360',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 19,
+                  color: driverDark,
+                ),
+              ),
+              Text(
+                'Track • Predict • Protect',
+                style: TextStyle(fontSize: 11, color: driverMuted),
+              ),
+            ],
+          ),
+        ),
+        IconButton(
+          tooltip: 'Attendance',
+          onPressed: () => setState(() => selectedTab = 'Attendance'),
+          icon: const Icon(Icons.fact_check_outlined),
+        ),
+        IconButton(
+          tooltip: 'Maintenance',
+          onPressed: () => setState(() => selectedTab = 'Bus Maintenance'),
+          icon: const Icon(Icons.build_circle_outlined, color: driverOrange),
+        ),
+        const CircleAvatar(
+          backgroundColor: Color(0xFFFFE8D6),
+          child: Icon(Icons.person, color: driverOrange),
+        ),
+        const SizedBox(width: 8),
+        if (MediaQuery.sizeOf(context).width > 500)
+          Text(name, style: const TextStyle(fontWeight: FontWeight.bold)),
+        const SizedBox(width: 8),
+        IconButton(
+          tooltip: 'Logout',
+          onPressed: _logout,
+          icon: const Icon(Icons.logout_rounded, color: Colors.redAccent),
+        ),
+      ],
+    ),
+  );
+
   Widget _sidebar() {
-    final items = [
-      [Icons.dashboard_rounded, 'Dashboard'],
-      [Icons.alt_route_rounded, "Today's Trip"],
-      [Icons.groups_rounded, 'Students'],
-      [Icons.fact_check_outlined, 'Attendance'],
-      [Icons.notifications_none, 'Notifications'],
-      [Icons.warning_amber_rounded, 'Emergency SOS'],
-      [Icons.build_circle_outlined, 'Bus Maintenance'],
-      [Icons.person_outline, 'My Profile'],
-      [Icons.settings_outlined, 'Settings'],
+    final items = <Map<String, dynamic>>[
+      {'icon': Icons.dashboard_rounded, 'label': 'Dashboard'},
+      {'icon': Icons.alt_route_rounded, 'label': "Today's Trip"},
+      {'icon': Icons.groups_rounded, 'label': 'Students'},
+      {'icon': Icons.fact_check_outlined, 'label': 'Attendance'},
+      {'icon': Icons.notifications_none_rounded, 'label': 'Notifications'},
+      {'icon': Icons.warning_amber_rounded, 'label': 'Emergency SOS'},
+      {'icon': Icons.build_circle_outlined, 'label': 'Bus Maintenance'},
+      {'icon': Icons.person_outline_rounded, 'label': 'My Profile'},
+      {'icon': Icons.settings_outlined, 'label': 'Settings'},
     ];
 
     return Container(
       width: 220,
       color: Colors.white,
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.fromLTRB(12, 16, 12, 12),
       child: Column(
         children: [
-          for (int i = 0; i < items.length; i++)
-            Container(
-              margin: const EdgeInsets.only(bottom: 7),
-              decoration: BoxDecoration(
-                color: items[i][1] == selectedTab
-                    ? driverOrange
-                    : Colors.transparent,
-                borderRadius: BorderRadius.circular(11),
-              ),
-              child: ListTile(
-                dense: true,
-                leading: Icon(
-                  items[i][0] as IconData,
-                  color: items[i][1] == selectedTab ? Colors.white : driverDark,
-                ),
-                title: Text(
-                  items[i][1] as String,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: items[i][1] == selectedTab
-                        ? Colors.white
-                        : driverDark,
-                    fontWeight: items[i][1] == selectedTab
-                        ? FontWeight.bold
-                        : FontWeight.normal,
+          Expanded(
+            child: ListView(
+              padding: EdgeInsets.zero,
+              children: [
+                for (final item in items)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Material(
+                      color: selectedTab == item['label']
+                          ? driverOrange
+                          : Colors.transparent,
+                      borderRadius: BorderRadius.circular(11),
+                      child: ListTile(
+                        dense: true,
+                        leading: Icon(
+                          item['icon'] as IconData,
+                          color: selectedTab == item['label']
+                              ? Colors.white
+                              : driverDark,
+                        ),
+                        title: Text(
+                          item['label'] as String,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: selectedTab == item['label']
+                                ? FontWeight.bold
+                                : FontWeight.normal,
+                            color: selectedTab == item['label']
+                                ? Colors.white
+                                : driverDark,
+                          ),
+                        ),
+                        onTap: () => setState(
+                          () => selectedTab = item['label'] as String,
+                        ),
+                      ),
+                    ),
                   ),
-                ),
-                onTap: () {
-                  final label = items[i][1] as String;
-                  if (label == 'Dashboard' || label == 'Bus Maintenance') {
-                    setState(() => selectedTab = label);
-                  } else {
-                    showMessage('$label is not connected in this demo yet.');
-                  }
-                },
-              ),
+              ],
             ),
-          const Spacer(),
-          const Icon(Icons.support_agent, size: 38, color: driverOrange),
+          ),
+          const Divider(),
+          const Icon(Icons.support_agent, color: driverOrange, size: 36),
           const Text(
             'Need Help?',
             style: TextStyle(fontWeight: FontWeight.bold),
@@ -359,858 +446,6 @@ class _DriverDashboardState extends State<DriverDashboard> {
           const Text(
             'Contact Transport Office',
             textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 11, color: driverMuted),
-          ),
-          const SizedBox(height: 10),
-          OutlinedButton(
-            onPressed: () => showMessage('Contact office demo'),
-            child: const Text('Call Office'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _maintenancePage(String busNumber, String routeName) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            IconButton(
-              onPressed: () => setState(() => selectedTab = 'Dashboard'),
-              icon: const Icon(Icons.arrow_back),
-              tooltip: 'Back to Dashboard',
-            ),
-            const SizedBox(width: 6),
-            const Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Bus Maintenance',
-                    style: TextStyle(
-                      fontSize: 26,
-                      fontWeight: FontWeight.bold,
-                      color: driverDark,
-                    ),
-                  ),
-                  SizedBox(height: 5),
-                  Text(
-                    'Service schedule, maintenance history and vehicle issue reporting',
-                    style: TextStyle(color: driverMuted),
-                  ),
-                ],
-              ),
-            ),
-            const Icon(Icons.build_circle, color: driverOrange, size: 34),
-          ],
-        ),
-        const SizedBox(height: 22),
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: const Color(0xFFFFF4E8),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: const Color(0xFFFFD8B5)),
-          ),
-          child: const Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Icon(Icons.info_outline, color: driverOrange),
-              SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  'Demo maintenance records only. Admin/Transport Office should verify and update actual service dates.',
-                  style: TextStyle(color: driverDark),
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 18),
-        LayoutBuilder(
-          builder: (context, constraints) {
-            final cards = [
-              _maintenanceInfoCard(
-                'Last Maintenance',
-                '12 Sep 2026',
-                'Oil and filter service',
-                Icons.check_circle_outline,
-                Colors.green,
-              ),
-              _maintenanceInfoCard(
-                'Next Maintenance Due',
-                '12 Dec 2026',
-                'Scheduled service (demo)',
-                Icons.calendar_month,
-                driverOrange,
-              ),
-              _maintenanceInfoCard(
-                'Vehicle',
-                busNumber,
-                routeName,
-                Icons.directions_bus,
-                Colors.blue,
-              ),
-            ];
-            if (constraints.maxWidth < 700) {
-              return Column(
-                children: [
-                  for (int i = 0; i < cards.length; i++)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 12),
-                      child: cards[i],
-                    ),
-                ],
-              );
-            }
-            return Row(
-              children: [
-                for (int i = 0; i < cards.length; i++)
-                  Expanded(
-                    child: Padding(
-                      padding: EdgeInsets.only(
-                        right: i == cards.length - 1 ? 0 : 12,
-                      ),
-                      child: cards[i],
-                    ),
-                  ),
-              ],
-            );
-          },
-        ),
-        const SizedBox(height: 8),
-        LayoutBuilder(
-          builder: (context, constraints) {
-            final history = _maintenanceHistoryPanel();
-            final report = _reportMaintenancePanel();
-            if (constraints.maxWidth < 850) {
-              return Column(
-                children: [history, const SizedBox(height: 16), report],
-              );
-            }
-            return Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(child: history),
-                const SizedBox(width: 16),
-                Expanded(child: report),
-              ],
-            );
-          },
-        ),
-        const SizedBox(height: 20),
-        const Center(
-          child: Text(
-            'CampusBusAI 360 • Maintenance • Demo Data',
-            style: TextStyle(color: driverMuted, fontSize: 12),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _maintenanceInfoCard(
-    String title,
-    String value,
-    String subtitle,
-    IconData icon,
-    Color color,
-  ) {
-    return Container(
-      constraints: const BoxConstraints(minHeight: 130),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(15),
-        border: Border.all(color: const Color(0xFFE8ECF2)),
-      ),
-      child: Row(
-        children: [
-          CircleAvatar(
-            radius: 24,
-            backgroundColor: color.withValues(alpha: 0.12),
-            child: Icon(icon, color: color),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(fontSize: 12, color: driverMuted),
-                ),
-                const SizedBox(height: 7),
-                Text(
-                  value,
-                  style: const TextStyle(
-                    fontSize: 19,
-                    fontWeight: FontWeight.bold,
-                    color: driverDark,
-                  ),
-                ),
-                const SizedBox(height: 5),
-                Text(
-                  subtitle,
-                  style: const TextStyle(fontSize: 11, color: driverMuted),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _maintenanceHistoryPanel() {
-    return _panel(
-      'Maintenance History',
-      Icons.history,
-      Column(
-        children: [
-          _maintenanceHistoryRow(
-            '12 Sep 2026',
-            'Oil and filter service',
-            'Completed • Demo record',
-            Colors.green,
-          ),
-          const Divider(),
-          _maintenanceHistoryRow(
-            '18 Jun 2026',
-            'Brake and tyre inspection',
-            'Completed • Demo record',
-            Colors.green,
-          ),
-          const Divider(),
-          _maintenanceHistoryRow(
-            '12 Dec 2026',
-            'Scheduled maintenance',
-            'Upcoming • Demo record',
-            driverOrange,
-          ),
-          const SizedBox(height: 12),
-          const Text(
-            'Actual history and service costs will be added after Admin/Firebase integration.',
-            style: TextStyle(fontSize: 11, color: driverMuted),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _maintenanceHistoryRow(
-    String date,
-    String title,
-    String subtitle,
-    Color color,
-  ) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 9),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(Icons.circle, size: 10, color: color),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 12,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  '$date • $subtitle',
-                  style: const TextStyle(fontSize: 10, color: driverMuted),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _reportMaintenancePanel() {
-    return _panel(
-      'Report Vehicle Issue',
-      Icons.report_problem_outlined,
-      Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Select issue type',
-            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 8),
-          DropdownButtonFormField<String>(
-            initialValue: maintenanceIssueType,
-            isExpanded: true,
-            decoration: const InputDecoration(
-              border: OutlineInputBorder(),
-              contentPadding: EdgeInsets.symmetric(
-                horizontal: 12,
-                vertical: 12,
-              ),
-            ),
-            items: const [
-              DropdownMenuItem(
-                value: 'General Inspection',
-                child: Text('General Inspection'),
-              ),
-              DropdownMenuItem(value: 'Engine', child: Text('Engine')),
-              DropdownMenuItem(value: 'Brakes', child: Text('Brakes')),
-              DropdownMenuItem(value: 'Tyres', child: Text('Tyres')),
-              DropdownMenuItem(
-                value: 'Battery / Electrical',
-                child: Text('Battery / Electrical'),
-              ),
-              DropdownMenuItem(value: 'Other', child: Text('Other')),
-            ],
-            onChanged: (value) {
-              if (value != null) setState(() => maintenanceIssueType = value);
-            },
-          ),
-          const SizedBox(height: 12),
-          const Text(
-            'Describe the issue',
-            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 8),
-          TextField(
-            controller: maintenanceIssueController,
-            maxLines: 4,
-            decoration: const InputDecoration(
-              hintText: 'Example: unusual engine sound, low tyre pressure...',
-              border: OutlineInputBorder(),
-              alignLabelWithHint: true,
-            ),
-          ),
-          const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton.icon(
-              style: FilledButton.styleFrom(
-                backgroundColor: driverOrange,
-                padding: const EdgeInsets.symmetric(vertical: 14),
-              ),
-              onPressed: () {
-                if (maintenanceIssueController.text.trim().isEmpty) {
-                  showMessage('Please describe the vehicle issue first.');
-                  return;
-                }
-                setState(() => issueSubmitted = true);
-                showMessage(
-                  'Issue recorded in demo only. No alert sent to Admin.',
-                );
-                maintenanceIssueController.clear();
-              },
-              icon: const Icon(Icons.send),
-              label: const Text('Submit Issue'),
-            ),
-          ),
-          if (issueSubmitted)
-            const Padding(
-              padding: EdgeInsets.only(top: 10),
-              child: Row(
-                children: [
-                  Icon(Icons.check_circle, color: Colors.green, size: 18),
-                  SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      'Last issue submitted in this demo session.',
-                      style: TextStyle(color: Colors.green, fontSize: 11),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  Widget _welcome(String driverName, String busNumber, String routeName) {
-    return Wrap(
-      alignment: WrapAlignment.spaceBetween,
-      crossAxisAlignment: WrapCrossAlignment.center,
-      runSpacing: 12,
-      children: [
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Hello, $driverName! 👋',
-              style: TextStyle(
-                fontSize: 27,
-                fontWeight: FontWeight.bold,
-                color: driverDark,
-              ),
-            ),
-            SizedBox(height: 5),
-            Text(
-              "Here is today's trip information.",
-              style: TextStyle(color: driverMuted),
-            ),
-          ],
-        ),
-        Container(
-          padding: const EdgeInsets.all(13),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(13),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.calendar_month, color: driverOrange),
-              SizedBox(width: 10),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Today’s Trip',
-                    style: TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  Text(
-                    '$busNumber • $routeName',
-                    style: TextStyle(fontSize: 11, color: driverMuted),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _summaryCards(String busNumber, String routeName) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final columns = constraints.maxWidth >= 1100
-            ? 5
-            : constraints.maxWidth >= 600
-            ? 2
-            : 1;
-        final width = (constraints.maxWidth - (columns - 1) * 10) / columns;
-
-        final cards = [
-          [
-            'Bus Number',
-            busNumber,
-            routeName,
-            Icons.directions_bus,
-            driverOrange,
-          ],
-          [
-            'Total Students',
-            '$expectedStudents',
-            'Expected today',
-            Icons.groups,
-            Colors.blue,
-          ],
-          [
-            'Boarded',
-            '$boardedCount',
-            'Demo records',
-            Icons.check_circle,
-            Colors.green,
-          ],
-          [
-            'Yet to Board',
-            '$remainingCount',
-            'Pending verification',
-            Icons.access_time,
-            Colors.deepOrange,
-          ],
-          [
-            'Current Occupancy',
-            '$boardedCount / 50',
-            '50-seat capacity (demo)',
-            Icons.airline_seat_recline_normal,
-            Colors.blue,
-          ],
-        ];
-
-        return Wrap(
-          spacing: 10,
-          runSpacing: 10,
-          children: [
-            for (final card in cards)
-              SizedBox(
-                width: width,
-                child: _summaryCard(
-                  card[0] as String,
-                  card[1] as String,
-                  card[2] as String,
-                  card[3] as IconData,
-                  card[4] as Color,
-                ),
-              ),
-          ],
-        );
-      },
-    );
-  }
-
-  Widget _summaryCard(
-    String title,
-    String value,
-    String subtitle,
-    IconData icon,
-    Color color,
-  ) {
-    return Container(
-      constraints: const BoxConstraints(minHeight: 108),
-      padding: const EdgeInsets.all(13),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(15),
-        border: Border.all(color: const Color(0xFFE8ECF2)),
-      ),
-      child: Row(
-        children: [
-          CircleAvatar(
-            radius: 24,
-            backgroundColor: color.withValues(alpha: 0.12),
-            child: Icon(icon, color: color),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(fontSize: 11, color: driverMuted),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  value,
-                  style: const TextStyle(
-                    fontSize: 19,
-                    fontWeight: FontWeight.bold,
-                    color: driverDark,
-                  ),
-                ),
-                const SizedBox(height: 3),
-                Text(
-                  subtitle,
-                  style: const TextStyle(fontSize: 10, color: driverMuted),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _panel(String title, IconData icon, Widget child) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(15),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFE8ECF2)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(icon, color: driverOrange, size: 23),
-              const SizedBox(width: 9),
-              Expanded(
-                child: Text(
-                  title,
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    color: driverDark,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 15),
-          child,
-        ],
-      ),
-    );
-  }
-
-  Widget _routePanel() {
-    final routeStops = [
-      ['Satara MIDC', '15 / 15 boarded', 'Completed'],
-      ['Power House', '8 / 10 boarded', 'Current Stop'],
-      ['Karanje', '0 / 8 boarded', 'Upcoming'],
-      ['College Main Gate', '0 / 7 boarded', 'Upcoming'],
-    ];
-
-    return _panel(
-      "Today's Route & Stops",
-      Icons.alt_route,
-      Column(
-        children: [
-          for (int i = 0; i < routeStops.length; i++)
-            Container(
-              margin: const EdgeInsets.only(bottom: 14),
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: i == 1
-                    ? const Color(0xFFEAF4FF)
-                    : const Color(0xFFF8FAFC),
-                borderRadius: BorderRadius.circular(11),
-              ),
-              child: Row(
-                children: [
-                  CircleAvatar(
-                    radius: 14,
-                    backgroundColor: i == 0 ? Colors.green : driverOrange,
-                    child: Icon(
-                      i == 0 ? Icons.check : Icons.location_on,
-                      color: Colors.white,
-                      size: 15,
-                    ),
-                  ),
-                  const SizedBox(width: 9),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          routeStops[i][0],
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 12,
-                          ),
-                        ),
-                        const SizedBox(height: 3),
-                        Text(
-                          routeStops[i][1],
-                          style: const TextStyle(
-                            fontSize: 10,
-                            color: driverMuted,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Text(
-                    routeStops[i][2],
-                    style: TextStyle(
-                      fontSize: 9,
-                      color: i == 0 ? Colors.green : driverOrange,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  Widget _tripPanel() {
-    return _panel(
-      'Current Trip',
-      Icons.route,
-      Column(
-        children: [
-          Row(
-            children: [
-              Expanded(child: _timeBox('Start Time', '07:45 AM')),
-              const SizedBox(width: 10),
-              Expanded(child: _timeBox('Expected End', '08:30 AM')),
-            ],
-          ),
-          const SizedBox(height: 13),
-          Row(
-            children: [
-              Expanded(
-                child: FilledButton.icon(
-                  style: FilledButton.styleFrom(
-                    backgroundColor: Colors.green,
-                    padding: const EdgeInsets.symmetric(vertical: 13),
-                  ),
-                  onPressed: tripStarted
-                      ? null
-                      : () => setState(() => tripStarted = true),
-                  icon: const Icon(Icons.play_arrow),
-                  label: const Text('Start Trip'),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: FilledButton.icon(
-                  style: FilledButton.styleFrom(
-                    backgroundColor: Colors.red,
-                    padding: const EdgeInsets.symmetric(vertical: 13),
-                  ),
-                  onPressed: tripStarted ? () => _confirmEndTrip() : null,
-                  icon: const Icon(Icons.stop),
-                  label: const Text('End Trip'),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: const Color(0xFFEAF4FF),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: const Row(
-              children: [
-                Icon(Icons.location_on, color: Colors.blue, size: 30),
-                SizedBox(width: 8),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Next Stop',
-                        style: TextStyle(color: driverMuted, fontSize: 11),
-                      ),
-                      Text(
-                        'Karanje',
-                        style: TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                      Text('In 4 min • 1.2 km', style: TextStyle(fontSize: 10)),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: _smallAction(
-                  'Report Issue',
-                  Icons.warning_rounded,
-                  Colors.deepOrange,
-                  () => _reportDialog('Report Issue'),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _smallAction(
-                  'Emergency SOS',
-                  Icons.sos,
-                  Colors.red,
-                  () => _reportDialog('Emergency SOS'),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _smallAction(
-                  'Call Office',
-                  Icons.call,
-                  Colors.blue,
-                  () => showMessage('Calling is not configured in this demo.'),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _timeBox(String title, String time) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: driverBg,
-        borderRadius: BorderRadius.circular(11),
-      ),
-      child: Column(
-        children: [
-          Text(title, style: const TextStyle(fontSize: 10, color: driverMuted)),
-          const SizedBox(height: 5),
-          Text(time, style: const TextStyle(fontWeight: FontWeight.bold)),
-        ],
-      ),
-    );
-  }
-
-  Widget _stopWisePanel() {
-    return _panel(
-      'Stop-wise Students',
-      Icons.groups,
-      Column(
-        children: [
-          const Row(
-            children: [
-              Expanded(flex: 3, child: _TableHeading('Stop')),
-              Expanded(child: _TableHeading('Expected')),
-              Expanded(child: _TableHeading('Boarded')),
-              Expanded(child: _TableHeading('Remaining')),
-            ],
-          ),
-          const Divider(),
-          for (final stop in stops)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 9),
-              child: Row(
-                children: [
-                  Expanded(
-                    flex: 3,
-                    child: Text(
-                      stop['name'] as String,
-                      style: const TextStyle(fontSize: 10),
-                    ),
-                  ),
-                  Expanded(
-                    child: Text(
-                      '${stop['expected']}',
-                      style: const TextStyle(fontSize: 11),
-                      textAlign: TextAlign.center,
-                    ),
-                  ),
-                  Expanded(
-                    child: Text(
-                      '${stop['boarded']}',
-                      style: const TextStyle(
-                        fontSize: 11,
-                        color: Colors.green,
-                        fontWeight: FontWeight.bold,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                  ),
-                  Expanded(
-                    child: Text(
-                      '${(stop['expected'] as int) - (stop['boarded'] as int)}',
-                      style: const TextStyle(
-                        fontSize: 11,
-                        color: Colors.red,
-                        fontWeight: FontWeight.bold,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          const Divider(),
-          const Text(
-            'Demo stop counts; real attendance integration pending.',
             style: TextStyle(fontSize: 10, color: driverMuted),
           ),
         ],
@@ -1218,306 +453,581 @@ class _DriverDashboardState extends State<DriverDashboard> {
     );
   }
 
-  Widget _studentsPanel() {
-    return _panel(
-      'Students at Current Stop',
-      Icons.people_alt,
-      Column(
-        children: [
-          Row(
+  Widget _noBusPage(String driverName) {
+    final Widget page;
+    switch (selectedTab) {
+      case 'Attendance':
+        page = const DriverAttendancePage();
+        break;
+      case 'Bus Maintenance':
+        page = _noBusNotice(
+          'Bus Maintenance',
+          Icons.build_circle_outlined,
+          'You can report vehicle issues after a bus is assigned to you. Your bus assignment is still pending with the Admin.',
+        );
+        break;
+      case 'Emergency SOS':
+        page = _noBusNotice(
+          'Emergency SOS',
+          Icons.sos,
+          'A bus must be assigned to your account before you can send an SOS alert. If there is an emergency, contact the Transport Office directly.',
+        );
+        break;
+      case 'Students':
+        page = _noBusNotice(
+          'Students',
+          Icons.groups_outlined,
+          'Students assigned to your bus will appear here once a bus is assigned to you.',
+        );
+        break;
+      case "Today's Trip":
+        page = _noBusNotice(
+          "Today's Trip",
+          Icons.alt_route,
+          'No bus has been assigned to your account yet. Your trip details will appear here after the Admin assigns a bus.',
+        );
+        break;
+      case 'Notifications':
+        page = _noBusNotice(
+          'Notifications',
+          Icons.notifications_none,
+          'There are no new driver notifications.',
+        );
+        break;
+      case 'My Profile':
+        page = _noBusNotice(
+          'My Profile',
+          Icons.person_outline,
+          'Driver: $driverName\nBus Assignment: Pending',
+        );
+        break;
+      case 'Settings':
+        page = _noBusNotice(
+          'Settings',
+          Icons.settings_outlined,
+          'Your Driver account settings will appear here.',
+        );
+        break;
+      default:
+        page = _noBusNotice(
+          'Welcome, $driverName',
+          Icons.dashboard_rounded,
+          'No bus has been assigned to your account. Please contact the Admin. Your trip, student list, and live attendance details will appear here after a bus is assigned.',
+        );
+    }
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(24),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 500),
+        child: Align(alignment: Alignment.topLeft, child: page),
+      ),
+    );
+  }
+
+  Widget _noBusNotice(String title, IconData icon, String message) => _panel(
+    title,
+    icon,
+    Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Chip(
+          avatar: Icon(Icons.info_outline, size: 17),
+          label: Text('Bus assignment pending'),
+        ),
+        const SizedBox(height: 8),
+        Text(message, style: const TextStyle(color: driverDark, height: 1.5)),
+      ],
+    ),
+  );
+
+  Widget _dashboard(
+    String name,
+    String busId,
+    String busNumber,
+    String routeName,
+    Map<String, dynamic> bus,
+  ) {
+    final tripId = '${busId}_$_dateKey';
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: _db.collection('trips').doc(tripId).snapshots(),
+      builder: (context, tripSnap) {
+        final trip = tripSnap.data?.data();
+        final started = trip?['status'] == 'inProgress';
+        final completed = trip?['status'] == 'completed';
+        return SingleChildScrollView(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Expanded(
-                child: _statusChip('Boarded ${boarded.length}', Colors.green),
-              ),
-              const SizedBox(width: 5),
-              Expanded(
-                child: _statusChip(
-                  'Yet to Board ${students.length - boarded.length}',
-                  Colors.deepOrange,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          for (final student in students)
-            Container(
-              padding: const EdgeInsets.symmetric(vertical: 9),
-              decoration: const BoxDecoration(
-                border: Border(bottom: BorderSide(color: Color(0xFFE8ECF2))),
-              ),
-              child: Row(
+              Wrap(
+                alignment: WrapAlignment.spaceBetween,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                runSpacing: 10,
                 children: [
-                  const CircleAvatar(
-                    radius: 15,
-                    backgroundColor: Color(0xFFEAF0F8),
-                    child: Icon(Icons.person, size: 17, color: driverMuted),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          student['name'] as String,
-                          style: const TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.bold,
-                          ),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Hello, $name! 👋',
+                        style: const TextStyle(
+                          fontSize: 26,
+                          fontWeight: FontWeight.bold,
+                          color: driverDark,
                         ),
-                        Text(
-                          '${student['id']} • ${student['stop']}',
-                          style: const TextStyle(
-                            fontSize: 9,
-                            color: driverMuted,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  TextButton(
-                    onPressed: () => _toggleBoarding(student['name'] as String),
-                    child: Text(
-                      boarded.contains(student['name'])
-                          ? 'Boarded ✓'
-                          : 'Mark Boarded',
-                      style: TextStyle(
-                        fontSize: 10,
-                        color: boarded.contains(student['name'])
-                            ? Colors.green
-                            : driverOrange,
                       ),
+                      const Text(
+                        "Here is today's assigned bus and trip information.",
+                        style: TextStyle(color: driverMuted),
+                      ),
+                    ],
+                  ),
+                  Chip(
+                    label: Text(
+                      completed
+                          ? 'Trip Completed'
+                          : started
+                          ? 'Trip In Progress'
+                          : 'Trip Not Started',
                     ),
                   ),
                 ],
               ),
+              const SizedBox(height: 18),
+              _attendanceSummary(busId, busNumber, routeName, tripId),
+              const SizedBox(height: 18),
+              _panel(
+                'Current Trip',
+                Icons.route,
+                Column(
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(child: _info('Bus Number', busNumber)),
+                        const SizedBox(width: 10),
+                        Expanded(child: _info('Assigned Route', routeName)),
+                      ],
+                    ),
+                    const SizedBox(height: 14),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: FilledButton.icon(
+                            onPressed: _busy || started || completed
+                                ? null
+                                : () => _startTrip(busId, bus),
+                            icon: const Icon(Icons.play_arrow),
+                            label: const Text('Start Trip'),
+                            style: FilledButton.styleFrom(
+                              backgroundColor: Colors.green,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: FilledButton.icon(
+                            onPressed: _busy || !started
+                                ? null
+                                : () => _completeTrip(busId),
+                            icon: const Icon(Icons.flag),
+                            label: const Text('Complete Trip'),
+                            style: FilledButton.styleFrom(
+                              backgroundColor: Colors.red,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      completed
+                          ? "Today's trip is complete."
+                          : started
+                          ? 'The trip is in progress. Record student boarding in the Attendance tab.'
+                          : 'Select Start Trip before recording attendance.',
+                      style: const TextStyle(color: driverMuted),
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: () =>
+                                setState(() => selectedTab = 'Attendance'),
+                            icon: const Icon(Icons.fact_check),
+                            label: const Text('Open Attendance'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: () => _sendSOS(busId, busNumber),
+                            icon: const Icon(Icons.sos, color: Colors.red),
+                            label: const Text('Emergency SOS'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              _studentList(busId),
+              const SizedBox(height: 16),
+              _panel('Assigned Route', Icons.alt_route, _routeStops(bus)),
+              const SizedBox(height: 16),
+              const Text(
+                'CampusBusAI 360 • Driver Module • Firebase-connected core features',
+                style: TextStyle(color: driverMuted, fontSize: 11),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _attendanceSummary(
+    String busId,
+    String busNumber,
+    String routeName,
+    String tripId,
+  ) => StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+    stream: _db
+        .collection('users')
+        .where('role', isEqualTo: 'student')
+        .where('busId', isEqualTo: busId)
+        .snapshots(),
+    builder: (context, studentSnap) {
+      final total = studentSnap.data?.docs.length ?? 0;
+      return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+        stream: _db
+            .collection('attendance')
+            .where('tripId', isEqualTo: tripId)
+            .where('driverId', isEqualTo: _uid)
+            .where('busId', isEqualTo: busId)
+            .snapshots(),
+        builder: (context, attendanceSnap) {
+          final records = attendanceSnap.data?.docs ?? [];
+          final boarded = records
+              .where((d) => d.data()['status'] == 'boarded')
+              .length;
+          final dropped = records
+              .where((d) => d.data()['status'] == 'dropped')
+              .length;
+          final notBoarded = (total - boarded - dropped).clamp(0, total);
+          return LayoutBuilder(
+            builder: (context, c) {
+              final cols = c.maxWidth > 850
+                  ? 4
+                  : c.maxWidth > 500
+                  ? 2
+                  : 1;
+              final values = [
+                ['Expected Students', '$total', Icons.groups, Colors.blue],
+                [
+                  'Currently On Bus',
+                  '$boarded',
+                  Icons.directions_bus,
+                  Colors.green,
+                ],
+                ['Dropped', '$dropped', Icons.check_circle, Colors.teal],
+                [
+                  'Yet to Board',
+                  '$notBoarded',
+                  Icons.access_time,
+                  driverOrange,
+                ],
+              ];
+              return Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: [
+                  for (final v in values)
+                    SizedBox(
+                      width: (c.maxWidth - (cols - 1) * 10) / cols,
+                      child: _stat(
+                        v[0] as String,
+                        v[1] as String,
+                        v[2] as IconData,
+                        v[3] as Color,
+                      ),
+                    ),
+                ],
+              );
+            },
+          );
+        },
+      );
+    },
+  );
+
+  Widget _studentList(String busId) => _panel(
+    'Students Assigned to This Bus',
+    Icons.groups,
+    StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: _db
+          .collection('users')
+          .where('role', isEqualTo: 'student')
+          .where('busId', isEqualTo: busId)
+          .snapshots(),
+      builder: (context, snap) {
+        if (snap.hasError) return Text('Student load error: ${snap.error}');
+        if (!snap.hasData)
+          return const Center(child: CircularProgressIndicator());
+        if (snap.data!.docs.isEmpty)
+          return const Text('No students have been assigned to this bus.');
+        return Column(
+          children: [
+            for (final doc in snap.data!.docs)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const CircleAvatar(child: Icon(Icons.person)),
+                title: Text((doc.data()['name'] ?? 'Student').toString()),
+                subtitle: Text(
+                  '${doc.data()['studentId'] ?? doc.id} • ${doc.data()['pickupStop'] ?? doc.data()['stop'] ?? 'Stop not set'}',
+                ),
+              ),
+          ],
+        );
+      },
+    ),
+  );
+
+  Widget _routeStops(Map<String, dynamic> bus) {
+    final raw = bus['routeStops'];
+    if (raw is List && raw.isNotEmpty) {
+      return Column(
+        children: [
+          for (final stop in raw)
+            ListTile(
+              dense: true,
+              leading: const Icon(
+                Icons.location_on_outlined,
+                color: driverOrange,
+              ),
+              title: Text(
+                stop is Map
+                    ? (stop['name'] ?? 'Stop').toString()
+                    : stop.toString(),
+              ),
             ),
         ],
-      ),
+      );
+    }
+    return Text(
+      (bus['routeName'] ?? 'Route stops have not been configured by Admin.')
+          .toString(),
     );
   }
 
-  Widget _activityPanel() {
-    return _panel(
-      'Recent Activity',
-      Icons.notifications_active,
-      const Column(
-        children: [
-          _ActivityRow(
-            icon: Icons.directions_bus,
-            color: driverOrange,
-            title: 'Arrived at Power House',
-            subtitle: '28 students boarded',
-            time: '08:08 AM',
-          ),
-          Divider(),
-          _ActivityRow(
-            icon: Icons.check_circle,
-            color: Colors.green,
-            title: 'Left Satara MIDC',
-            subtitle: '15 students boarded',
-            time: '07:52 AM',
-          ),
-          Divider(),
-          _ActivityRow(
-            icon: Icons.play_circle,
-            color: Colors.blue,
-            title: 'Bus started from depot',
-            subtitle: 'Demo trip started',
-            time: '07:45 AM',
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _statusChip(String label, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 5),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Text(
-        label,
-        textAlign: TextAlign.center,
-        style: TextStyle(
-          fontSize: 9,
-          fontWeight: FontWeight.bold,
-          color: color,
-        ),
-      ),
-    );
-  }
-
-  Widget _smallAction(
-    String title,
-    IconData icon,
-    Color color,
-    VoidCallback onTap,
-  ) {
-    return Material(
-      color: color.withValues(alpha: 0.09),
-      borderRadius: BorderRadius.circular(11),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(11),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 3),
-          child: Column(
-            children: [
-              Icon(icon, color: color, size: 25),
-              const SizedBox(height: 5),
-              Text(
-                title,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  fontSize: 9,
+  Widget _maintenance(String busId, String busNumber) => SingleChildScrollView(
+    padding: const EdgeInsets.all(20),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            IconButton(
+              onPressed: () => setState(() => selectedTab = 'Dashboard'),
+              icon: const Icon(Icons.arrow_back),
+            ),
+            const Expanded(
+              child: Text(
+                'Bus Maintenance',
+                style: TextStyle(
+                  fontSize: 25,
                   fontWeight: FontWeight.bold,
+                  color: driverDark,
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        _panel(
+          'Report Vehicle Issue',
+          Icons.report_problem_outlined,
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              DropdownButtonFormField<String>(
+                value: issueType,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  labelText: 'Issue Type',
+                  border: OutlineInputBorder(),
+                ),
+                items:
+                    const [
+                          'General Inspection',
+                          'Engine',
+                          'Brakes',
+                          'Tyres',
+                          'Battery / Electrical',
+                          'Other',
+                        ]
+                        .map((v) => DropdownMenuItem(value: v, child: Text(v)))
+                        .toList(),
+                onChanged: (v) {
+                  if (v != null) setState(() => issueType = v);
+                },
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: issueController,
+                maxLines: 4,
+                decoration: const InputDecoration(
+                  labelText: 'Describe the issue',
+                  border: OutlineInputBorder(),
+                  alignLabelWithHint: true,
+                ),
+              ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: _busy
+                      ? null
+                      : () => _submitMaintenance(busId, busNumber),
+                  icon: const Icon(Icons.send),
+                  label: const Text('Submit Issue'),
+                  style: FilledButton.styleFrom(backgroundColor: driverOrange),
                 ),
               ),
             ],
           ),
         ),
-      ),
-    );
-  }
-
-  void _toggleBoarding(String name) {
-    setState(() {
-      if (boarded.contains(name)) {
-        boarded.remove(name);
-      } else {
-        boarded.add(name);
-      }
-    });
-    showMessage(
-      boarded.contains(name)
-          ? '$name marked as boarded (demo)'
-          : '$name boarding status reset (demo)',
-    );
-  }
-
-  void _confirmEndTrip() {
-    final pending = remainingCount;
-    showDialog<void>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('End Trip?'),
-        content: Text(
-          '$pending students are still pending in the demo count. '
-          'Verify attendance before ending the trip.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () {
-              setState(() => tripStarted = false);
-              Navigator.pop(dialogContext);
-              showMessage('Trip ended in demo mode.');
+        const SizedBox(height: 16),
+        _panel(
+          'My Maintenance Reports',
+          Icons.history,
+          StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+            stream: _db
+                .collection('maintenance_reports')
+                .where('driverId', isEqualTo: _uid)
+                .orderBy('createdAt', descending: true)
+                .limit(20)
+                .snapshots(),
+            builder: (context, snap) {
+              if (snap.hasError)
+                return Text('Reports load error: ${snap.error}');
+              if (!snap.hasData)
+                return const Center(child: CircularProgressIndicator());
+              if (snap.data!.docs.isEmpty)
+                return const Text(
+                  'You have not submitted any maintenance reports yet.',
+                );
+              return Column(
+                children: [
+                  for (final d in snap.data!.docs)
+                    ListTile(
+                      leading: const Icon(
+                        Icons.build_circle_outlined,
+                        color: driverOrange,
+                      ),
+                      title: Text(
+                        (d.data()['issueType'] ?? 'Issue').toString(),
+                      ),
+                      subtitle: Text(
+                        (d.data()['description'] ?? '').toString(),
+                      ),
+                      trailing: Chip(
+                        label: Text(
+                          (d.data()['status'] ?? 'pending').toString(),
+                        ),
+                      ),
+                    ),
+                ],
+              );
             },
-            child: const Text('Confirm Demo'),
           ),
-        ],
-      ),
-    );
-  }
-
-  void _reportDialog(String title) {
-    showDialog<void>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(title),
-        content: const Text(
-          'This is a demonstration. No real emergency alert or call is sent.',
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () {
-              Navigator.pop(dialogContext);
-              showMessage('$title demo recorded locally.');
-            },
-            child: const Text('Test'),
-          ),
-        ],
-      ),
-    );
-  }
-}
+      ],
+    ),
+  );
 
-class _TableHeading extends StatelessWidget {
-  final String label;
-  const _TableHeading(this.label);
-
-  @override
-  Widget build(BuildContext context) {
-    return Text(
-      label,
-      textAlign: TextAlign.center,
-      style: const TextStyle(
-        fontSize: 9,
-        fontWeight: FontWeight.bold,
-        color: driverMuted,
-      ),
-    );
-  }
-}
-
-class _ActivityRow extends StatelessWidget {
-  final IconData icon;
-  final Color color;
-  final String title;
-  final String subtitle;
-  final String time;
-
-  const _ActivityRow({
-    required this.icon,
-    required this.color,
-    required this.title,
-    required this.subtitle,
-    required this.time,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 10),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          CircleAvatar(
-            backgroundColor: color.withValues(alpha: 0.12),
-            child: Icon(icon, color: color, size: 20),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  subtitle,
-                  style: const TextStyle(fontSize: 10, color: driverMuted),
-                ),
-              ],
+  Widget _panel(String title, IconData icon, Widget child) => Container(
+    width: double.infinity,
+    padding: const EdgeInsets.all(16),
+    decoration: BoxDecoration(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(15),
+      border: Border.all(color: const Color(0xFFE8ECF2)),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(icon, color: driverOrange),
+            const SizedBox(width: 8),
+            Text(
+              title,
+              style: const TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+                color: driverDark,
+              ),
             ),
-          ),
-          Text(time, style: const TextStyle(fontSize: 9, color: driverMuted)),
-        ],
-      ),
-    );
-  }
+          ],
+        ),
+        const SizedBox(height: 14),
+        child,
+      ],
+    ),
+  );
+
+  Widget _stat(String title, String value, IconData icon, Color color) =>
+      Container(
+        padding: const EdgeInsets.all(15),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: const Color(0xFFE8ECF2)),
+        ),
+        child: Row(
+          children: [
+            CircleAvatar(
+              backgroundColor: color.withValues(alpha: .12),
+              child: Icon(icon, color: color),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    value,
+                    style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                      color: color,
+                    ),
+                  ),
+                  Text(
+                    title,
+                    style: const TextStyle(fontSize: 11, color: driverMuted),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+
+  Widget _info(String title, String value) => Container(
+    padding: const EdgeInsets.all(12),
+    decoration: BoxDecoration(
+      color: driverBg,
+      borderRadius: BorderRadius.circular(10),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title, style: const TextStyle(fontSize: 10, color: driverMuted)),
+        const SizedBox(height: 5),
+        Text(value, style: const TextStyle(fontWeight: FontWeight.bold)),
+      ],
+    ),
+  );
 }

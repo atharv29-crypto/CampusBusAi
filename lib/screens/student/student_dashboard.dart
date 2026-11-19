@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'student_feature_screen.dart';
 import 'google_map_tracking.dart';
 
@@ -43,6 +45,10 @@ class StudentDashboard extends StatelessWidget {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             const WelcomeSection(),
+                            const SizedBox(height: 12),
+                            const StudentIdCard(),
+                            const SizedBox(height: 12),
+                            const ParentLinkRequests(),
                             const SizedBox(height: 22),
                             const SummarySection(),
                             const SizedBox(height: 18),
@@ -107,6 +113,175 @@ class StudentDashboard extends StatelessWidget {
           );
         },
       ),
+    );
+  }
+}
+
+class StudentIdCard extends StatelessWidget {
+  const StudentIdCard({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return const SizedBox.shrink();
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .snapshots(),
+      builder: (context, snapshot) {
+        final data = snapshot.data?.data();
+        final studentBusId = (data?['studentBusId'] ?? '').toString();
+        if (studentBusId.isEmpty) return const SizedBox.shrink();
+        return Card(
+          child: ListTile(
+            leading: const CircleAvatar(
+              child: Icon(Icons.directions_bus_outlined),
+            ),
+            title: const Text('Your Student Bus ID'),
+            subtitle: Text(
+              studentBusId,
+              style: const TextStyle(
+                fontWeight: FontWeight.bold,
+                letterSpacing: 1,
+              ),
+            ),
+            trailing: IconButton(
+              tooltip: 'Copy Student Bus ID',
+              icon: const Icon(Icons.copy),
+              onPressed: () async {
+                await Clipboard.setData(ClipboardData(text: studentBusId));
+                if (context.mounted)
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text(
+                        'Student Bus ID copied. Share it with your parent.',
+                      ),
+                    ),
+                  );
+              },
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class ParentLinkRequests extends StatelessWidget {
+  const ParentLinkRequests({super.key});
+
+  Future<void> _respond(
+    BuildContext context,
+    QueryDocumentSnapshot<Map<String, dynamic>> request,
+    bool approve,
+  ) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    try {
+      final db = FirebaseFirestore.instance;
+      final batch = db.batch();
+      batch.update(request.reference, {
+        'status': approve ? 'approved' : 'rejected',
+        'reviewedAt': FieldValue.serverTimestamp(),
+      });
+      if (approve) {
+        batch.update(db.collection('users').doc(uid), {
+          'approvedParentUids': FieldValue.arrayUnion([
+            request.data()['parentUid'],
+          ]),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      }
+      await batch.commit();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              approve ? 'Parent request approved.' : 'Parent request rejected.',
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not update the request. Please try again.'),
+          ),
+        );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return const SizedBox.shrink();
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('parent_link_requests')
+          .where('studentUid', isEqualTo: uid)
+          .where('status', isEqualTo: 'pending')
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text('Could not load parent requests. Please try again.'),
+            ),
+          );
+        }
+        if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+          return const SizedBox.shrink();
+        }
+        return Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Parent Linking Requests',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                ),
+                const SizedBox(height: 8),
+                for (final request in snapshot.data!.docs) ...[
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const CircleAvatar(
+                      child: Icon(Icons.family_restroom),
+                    ),
+                    title: Text(
+                      (request.data()['parentName'] ?? 'Parent').toString(),
+                    ),
+                    subtitle: Text(
+                      'Relationship: ${request.data()['relationship'] ?? 'Guardian'} • Student Bus ID: ${request.data()['studentBusId'] ?? ''}',
+                    ),
+                  ),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: () => _respond(context, request, false),
+                          child: const Text('Reject'),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: FilledButton(
+                          onPressed: () => _respond(context, request, true),
+                          child: const Text('Approve'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -396,23 +571,49 @@ class WelcomeSection extends StatelessWidget {
       crossAxisAlignment: WrapCrossAlignment.center,
       runSpacing: 12,
       children: [
-        const Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Hello, Atharv! 👋',
-              style: TextStyle(
-                fontSize: 27,
-                fontWeight: FontWeight.bold,
-                color: dark,
-              ),
-            ),
-            SizedBox(height: 5),
-            Text(
-              "Here's your bus information for today.",
-              style: TextStyle(color: muted, fontSize: 14),
-            ),
-          ],
+        StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+          stream: FirebaseFirestore.instance
+              .collection('users')
+              .doc(FirebaseAuth.instance.currentUser?.uid)
+              .snapshots(),
+          builder: (context, snapshot) {
+            final profile = snapshot.data?.data() ?? {};
+            final studentName =
+                (profile['name'] ??
+                        FirebaseAuth.instance.currentUser?.displayName ??
+                        'Student')
+                    .toString();
+            final studentBusId = (profile['studentBusId'] ?? 'Generating...')
+                .toString();
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Hello, $studentName! 👋',
+                  style: const TextStyle(
+                    fontSize: 27,
+                    fontWeight: FontWeight.bold,
+                    color: dark,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Student Bus ID: $studentBusId',
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: orange,
+                    letterSpacing: .4,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                const Text(
+                  "Here's your bus information for today.",
+                  style: TextStyle(color: muted, fontSize: 14),
+                ),
+              ],
+            );
+          },
         ),
         Container(
           padding: const EdgeInsets.all(13),

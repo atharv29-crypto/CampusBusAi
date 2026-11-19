@@ -81,7 +81,7 @@ class _GoogleMapTrackingState extends State<GoogleMapTracking> {
       final response = await http.get(uri).timeout(const Duration(seconds: 30));
 
       if (response.statusCode != 200) {
-        throw Exception('Routing service error: ${response.statusCode}');
+        throw Exception('Could not load the route. Please try again.');
       }
 
       final data = jsonDecode(response.body) as Map<String, dynamic>;
@@ -89,7 +89,7 @@ class _GoogleMapTrackingState extends State<GoogleMapTracking> {
       final routes = data['routes'] as List?;
 
       if (data['code'] != 'Ok' || routes == null || routes.isEmpty) {
-        throw Exception('No drivable road route was found.');
+        throw Exception('No road route was found for these stops.');
       }
 
       final geometry = routes.first['geometry'] as Map<String, dynamic>;
@@ -103,7 +103,7 @@ class _GoogleMapTrackingState extends State<GoogleMapTracking> {
       }).toList();
 
       if (roadPoints.length < 2) {
-        throw Exception('The route returned too few coordinates.');
+        throw Exception('The route could not be displayed. Please try again.');
       }
 
       if (!mounted) return;

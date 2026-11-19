@@ -1,219 +1,144 @@
-
 rules_version = '2';
-
 service cloud.firestore {
   match /databases/{database}/documents {
-
-    // ==========================================
-    // AUTHENTICATION HELPERS
-    // ==========================================
-
-    function signedIn() {
-      return request.auth != null;
-    }
-
-    function isOwner(uid) {
-      return signedIn() && request.auth.uid == uid;
-    }
-
-    function isAdmin() {
+    function signedIn() { return request.auth != null; }
+    function isOwner(uid) { return signedIn() && request.auth.uid == uid; }
+    function isAdmin() { return signedIn() && request.auth.token.admin == true; }
+    function isAssignedDriver(busId) {
       return signedIn()
-        && request.auth.token.admin == true;
+        && exists(/databases/$(database)/documents/buses/$(busId))
+        && get(/databases/$(database)/documents/buses/$(busId)).data.driverId == request.auth.uid;
+    }
+    function ownsTrip(tripId) {
+      return exists(/databases/$(database)/documents/trips/$(tripId))
+        && get(/databases/$(database)/documents/trips/$(tripId)).data.driverId == request.auth.uid;
     }
 
-
-    // ==========================================
-    // STUDENT & PARENT VALIDATION
-    // ==========================================
-
-    function validPublicUser(uid) {
-      return isOwner(uid)
+    match /users/{uid} {
+      allow create: if isOwner(uid)
         && request.resource.data.uid == uid
         && request.resource.data.email == request.auth.token.email
         && request.resource.data.role in ['student', 'parent']
         && request.resource.data.isActive == true
+        && (request.resource.data.role != 'student' || (request.resource.data.busId is string
+          && exists(/databases/$(database)/documents/buses/$(request.resource.data.busId))
+          && get(/databases/$(database)/documents/buses/$(request.resource.data.busId)).data.isActive == true))
         && request.resource.data.keys().hasOnly([
-          'uid',
-          'name',
-          'email',
-          'role',
-          'createdAt',
-          'isActive'
+          'uid','name','email','role','createdAt','isActive',
+          'studentId','studentBusId','busId','busNumber','requestedStudentBusId','parentLinkStatus','relationship'
         ]);
-    }
-
-
-    // ==========================================
-    // USERS COLLECTION
-    // ==========================================
-
-    match /users/{uid} {
-
-      // Owner can read own profile.
-      // Admin can read all profiles.
-      allow read: if isOwner(uid) || isAdmin();
-
-      // Student / Parent self-registration
-      // Driver profile creation by Admin only
-      allow create: if validPublicUser(uid)
-        || (
-          isAdmin()
-          && request.resource.data.uid == uid
-          && request.resource.data.role == 'driver'
-          && request.resource.data.isActive == true
-          && request.resource.data.keys().hasOnly([
-            'uid',
-            'name',
-            'email',
-            'role',
-            'mobile',
-            'employeeId',
-            'busNumber',
-            'createdAt',
-            'approvedAt',
-            'isActive'
-          ])
-        );
-
-      // Profile updates and deletion disabled
-      allow update, delete: if false;
-    }
-
-
-    // ==========================================
-    // DRIVER REGISTRATION REQUESTS
-    // ==========================================
-
-    match /driver_requests/{uid} {
-
-      // Driver can read own request.
-      // Admin can read all requests.
-      allow read: if isOwner(uid) || isAdmin();
-
-      // Driver submits registration request
-      allow create: if isOwner(uid)
-        && request.resource.data.uid == uid
-        && request.resource.data.email == request.auth.token.email
-        && request.resource.data.status == 'pending'
-        && request.resource.data.keys().hasOnly([
-          'uid',
-          'name',
-          'email',
-          'mobile',
-          'employeeId',
-          'busNumber',
-          'status',
-          'createdAt'
-        ]);
-
-      // Only Admin can approve or reject
+      allow read: if isOwner(uid) || isAdmin()
+        || (signedIn() && resource.data.role == 'student'
+            && resource.data.busId is string && isAssignedDriver(resource.data.busId))
+        || (signedIn() && resource.data.role == 'student'
+            && resource.data.approvedParentUids is list
+            && resource.data.approvedParentUids.hasAny([request.auth.uid]));
       allow update: if isAdmin()
-        && request.resource.data.diff(resource.data)
-          .affectedKeys().hasOnly([
-            'status',
-            'reviewedAt',
-            'reviewedBy'
-          ])
-        && request.resource.data.status in [
-          'approved',
-          'rejected'
-        ]
-        && request.resource.data.reviewedBy == request.auth.uid;
-
-      // No deletion allowed
-      allow delete: if false;
-    }
-
-
-    // ==========================================
-    // BUSES COLLECTION
-    // ==========================================
-
-    match /buses/{id} {
-
-      // Only Admin can read buses
-      allow read: if isAdmin();
-
-      // Only Admin can add buses
-      allow create: if isAdmin();
-
-      // Only Admin can edit buses
-      allow update: if isAdmin();
-
-      // Only Admin can delete buses
+        || (isOwner(uid) && resource.data.role == 'student'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['approvedParentUids','updatedAt'])
+            && request.resource.data.approvedParentUids is list);
       allow delete: if isAdmin();
     }
 
+    match /driver_requests/{uid} {
+      allow read: if isOwner(uid) || isAdmin();
+      allow create: if isOwner(uid) && request.resource.data.uid == uid
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.status == 'pending';
+      allow update: if isAdmin()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','reviewedAt','reviewedBy'])
+        && request.resource.data.status in ['approved','rejected'];
+      allow delete: if false;
+    }
 
-    // ==========================================
-    // BUS HISTORY COLLECTION
-    // ==========================================
+    match /buses/{id} {
+      allow read: if isAdmin() || (signedIn() && resource.data.isActive == true) || (signedIn() && resource.data.driverId == request.auth.uid);
+      allow create, update, delete: if isAdmin();
+    }
 
     match /bus_history/{id} {
-
-      // Only Admin can read history
       allow read: if isAdmin();
-
-      // Only Admin can create history records
       allow create: if isAdmin();
-
-      // History cannot be modified or deleted
       allow update, delete: if false;
     }
 
-
-    // ==========================================
-    // ROUTES COLLECTION
-    // ==========================================
-
     match /routes/{id} {
-      allow read, write: if false;
+      allow read: if isAdmin() || signedIn();
+      allow write: if isAdmin();
     }
-
-
-    // ==========================================
-    // TRIPS COLLECTION
-    // ==========================================
 
     match /trips/{id} {
-      allow read, write: if false;
+      allow get: if isAdmin() || (signedIn() && (resource == null || resource.data.driverId == request.auth.uid));
+      allow list: if isAdmin() || (signedIn() && resource.data.driverId == request.auth.uid);
+      allow create: if signedIn() && request.resource.data.driverId == request.auth.uid
+        && isAssignedDriver(request.resource.data.busId)
+        && request.resource.data.status == 'inProgress';
+      allow update: if isAdmin() || (signedIn() && resource.data.driverId == request.auth.uid
+        && request.resource.data.driverId == resource.data.driverId
+        && request.resource.data.busId == resource.data.busId
+        && request.resource.data.status == 'completed');
+      allow delete: if isAdmin();
     }
-
-
-    // ==========================================
-    // ATTENDANCE COLLECTION
-    // ==========================================
 
     match /attendance/{id} {
-      allow read, write: if false;
+      allow get: if isAdmin() || (signedIn() && (resource == null ||
+        (resource.data.driverId == request.auth.uid && isAssignedDriver(resource.data.busId))));
+      allow list: if isAdmin() || (signedIn() && resource.data.driverId == request.auth.uid
+        && isAssignedDriver(resource.data.busId));
+      allow create: if signedIn()
+        && request.resource.data.driverId == request.auth.uid
+        && isAssignedDriver(request.resource.data.busId)
+        && ownsTrip(request.resource.data.tripId)
+        && request.resource.data.status == 'boarded';
+      allow update: if signedIn() && resource.data.driverId == request.auth.uid
+        && isAssignedDriver(resource.data.busId)
+        && ownsTrip(resource.data.tripId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status','dropStop','droppedAt','updatedAt','dropMarkedByTripCompletion'
+        ])
+        && request.resource.data.status == 'dropped';
+      allow delete: if isAdmin();
     }
 
+    match /student_id_lookup/{studentId} {
+      allow get: if true;
+      allow list: if false;
+      allow create: if signedIn() && request.resource.data.studentUid == request.auth.uid
+        && request.resource.data.studentId == studentId;
+      allow update, delete: if false;
+    }
 
-    // ==========================================
-    // MAINTENANCE COLLECTION
-    // ==========================================
+    match /student_bus_id_lookup/{studentBusId} {
+      allow get: if true;
+      allow list: if false;
+      allow create: if signedIn() && request.resource.data.studentUid == request.auth.uid
+        && request.resource.data.studentBusId == studentBusId;
+      allow update, delete: if false;
+    }
+
+    match /parent_link_requests/{requestId} {
+      allow create: if signedIn() && request.resource.data.parentUid == request.auth.uid
+        && request.resource.data.status == 'pending';
+      allow read: if isAdmin() || (signedIn() &&
+        (resource.data.parentUid == request.auth.uid || resource.data.studentUid == request.auth.uid));
+      allow update: if signedIn() && resource.data.studentUid == request.auth.uid
+        && resource.data.status == 'pending'
+        && request.resource.data.status in ['approved','rejected'];
+      allow delete: if isAdmin();
+    }
 
     match /maintenance/{id} {
-      allow read, write: if false;
+      allow read, write: if isAdmin();
     }
-
-
-    // ==========================================
-    // NOTIFICATIONS COLLECTION
-    // ==========================================
-
     match /notifications/{id} {
-      allow read, write: if false;
+      allow read: if isAdmin() || (signedIn() && resource.data.userId == request.auth.uid);
+      allow create, update: if isAdmin();
+      allow delete: if isAdmin();
     }
-
-
-    // ==========================================
-    // SOS ALERTS COLLECTION
-    // ==========================================
-
     match /sos_alerts/{id} {
-      allow read, write: if false;
+      allow read: if isAdmin() || (signedIn() && resource.data.isActive == true) || (signedIn() && resource.data.driverId == request.auth.uid);
+      allow create: if signedIn();
+      allow update, delete: if isAdmin();
     }
-
   }
 }

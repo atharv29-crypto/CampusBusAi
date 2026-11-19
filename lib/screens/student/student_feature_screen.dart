@@ -156,27 +156,28 @@ class StudentFeatureScreen extends StatelessWidget {
       case 'Live Tracking':
         return {
           'description': 'View your assigned bus tracking information.',
-          'status': 'Demo mode: GPS is not connected.',
+          'status': 'Demo mode: GPS is not connected yet.',
         };
       case 'My Route':
         return {
           'description': 'Check your bus route and scheduled stops.',
-          'status': 'Route information is currently illustrative.',
+          'status': 'Route information is sample data.',
         };
       case 'Attendance':
         return {
           'description': 'Review boarding and exit attendance details.',
-          'status': 'Demo records are not saved to Firebase.',
+          'status':
+              'Attendance records are sample data and are not saved to Firebase.',
         };
       case 'Notifications':
         return {
           'description': 'Review bus updates and journey alerts.',
-          'status': 'Push notifications are not configured yet.',
+          'status': 'Push notifications are not set up yet.',
         };
       case 'My Profile':
         return {
           'description': 'View your student profile information.',
-          'status': 'Profile information is currently demo data.',
+          'status': 'Some profile details are sample data.',
         };
       case 'Settings':
         return {
@@ -185,13 +186,14 @@ class StudentFeatureScreen extends StatelessWidget {
         };
       case 'Report Issue':
         return {
-          'description': 'Review the issue-reporting feature.',
-          'status': 'Issue reports are not sent to the transport office.',
+          'description': 'Report a problem related to your bus or journey.',
+          'status':
+              'Issue reports are not connected to the Transport Office yet.',
         };
       default:
         return {
-          'description': 'Explore your CollegeBus student portal.',
-          'status': 'Prototype mode: backend services are not connected.',
+          'description': 'Explore your CampusBusAI student portal.',
+          'status': 'Some services are still under development.',
         };
     }
   }
@@ -203,7 +205,7 @@ class StudentFeatureScreen extends StatelessWidget {
           'Assigned Bus: BUS-01',
           'Current Location: Near Power House',
           'Estimated Arrival: 8 minutes',
-          'Location Source: Simulated data',
+          'Location Source: Sample data',
         ];
       case 'My Route':
         return [
@@ -218,12 +220,12 @@ class StudentFeatureScreen extends StatelessWidget {
           'Expected Students: 40',
           'Boarded Students: 28',
           'Yet to Board: 12',
-          'Attendance source: Demo data',
+          'Attendance Source: Sample data',
         ];
       case 'Notifications':
         return [
           'Bus-01 is delayed',
-          'Previous attendance marked',
+          'Previous attendance was recorded',
           'Bus-01 left Satara MIDC',
         ];
       case 'My Profile':
